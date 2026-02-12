@@ -205,8 +205,7 @@ tr:hover td{background:var(--surface2)}
   </div>
   <div class="header-right">
     <div class="header-badge"><span class="dot"></span><span id="statusText">Sin datos</span></div>
-    <button class="btn" onclick="exportReport()">⬇ CSV</button>
-    <button class="btn btn-accent hidden" id="btnKMZ" onclick="exportMRKasKMZ()">📦 MRK → KMZ</button>
+    <button class="btn btn-accent" onclick="exportFullKMZ()">📦 Descargar KMZ</button>
   </div>
 </header>
 
@@ -321,7 +320,7 @@ tr:hover td{background:var(--surface2)}
     <!-- FLIGHTS -->
     <div id="tab-flights" class="hidden">
       <div class="section-title">Registro de Vuelos</div>
-      <div id="flightsContent"><div style="text-align:center;padding:60px 20px;color:var(--text-dim)"><div style="font-size:48px;margin-bottom:16px;opacity:.4">✈️</div><h3 style="font-size:18px;margin-bottom:8px;color:var(--text)">Sin datos de vuelo</h3><p style="font-size:14px">Usa el botón <strong>+ Cargar MRK</strong> o la pestaña <strong>Datos</strong>.</p></div></div>
+      <div id="flightsContent"><div style="text-align:center;padding:60px 20px;color:var(--text-dim)"><div style="font-size:48px;margin-bottom:16px;opacity:.4">✈️</div><h3 style="font-size:18px;margin-bottom:8px;color:var(--text)">Sin datos de vuelo</h3><p style="font-size:14px">Los vuelos se actualizan desde el generador Python.</p></div></div>
     </div>
 
     <!-- TIMELINE -->
@@ -345,10 +344,7 @@ tr:hover td{background:var(--surface2)}
 </div>
 
 <!-- FAB -->
-<button class="fab-mrk hidden" id="fabMRK" onclick="document.getElementById('mrkFab').click()">
-  <input type="file" id="mrkFab" accept=".mrk,.csv,.txt" multiple style="display:none">
-  ✈️ + Cargar MRK
-</button>
+<!-- FAB removed: MRK data comes from embedded data -->
 
 <script>
 // ========== STATE ==========
@@ -518,7 +514,7 @@ document.getElementById('kmlInput').addEventListener('change',e=>handleKML(e.tar
 document.getElementById('mrkInput0').addEventListener('change',e=>{handleMRKDirect(e.target.files);showDashboard()});
 document.getElementById('kmlReplace').addEventListener('change',e=>{handleKML(e.target.files);e.target.value=''});
 document.getElementById('mrkAdd').addEventListener('change',e=>{handleMRKWithPreview(e.target.files);e.target.value=''});
-document.getElementById('mrkFab').addEventListener('change',e=>{handleMRKWithPreview(e.target.files);e.target.value=''});
+// mrkFab removed — data comes embedded from Python
 
 // ========== PREVIEW ==========
 function showPreview() {
@@ -597,8 +593,6 @@ function renderDataManager() {
     const cls = f.active?'':'disabled';
     mrkList.innerHTML += `<div class="dm-file ${cls}"><div class="dm-icon">✈️</div><div class="dm-info"><div class="dm-name">${f.name}</div><div class="dm-meta">${f.points.length} puntos · ${matched} dentro · <span class="dm-badge ${badge}">${pct}%</span> · ${f.dateAdded||'—'}</div></div><div class="dm-actions"><button class="dm-toggle ${f.active?'on':'off'}" onclick="toggleMRK(${i})" title="${f.active?'Desactivar':'Activar'}"></button><button class="btn btn-sm btn-danger" onclick="removeMRK(${i})" title="Eliminar">🗑</button></div></div>`;
   });
-  if(mrkFiles.some(f=>f.active)) document.getElementById('btnKMZ').classList.remove('hidden');
-  else document.getElementById('btnKMZ').classList.add('hidden');
 }
 
 function removeKML(i) {
@@ -620,7 +614,6 @@ function toggleMRK(i) {
 function showDashboard() {
   document.getElementById('uploadSection').style.display='none';
   document.getElementById('dashboard').classList.remove('hidden');
-  document.getElementById('fabMRK').classList.remove('hidden');
   initMap();
   refreshAll();
 }
@@ -760,7 +753,7 @@ function renderZones(){
 function renderFlights(){
   const c=document.getElementById('flightsContent');
   const pts=getActiveMRKPoints();
-  if(!pts.length){c.innerHTML='<div style="text-align:center;padding:60px 20px;color:var(--text-dim)"><div style="font-size:48px;margin-bottom:16px;opacity:.4">✈️</div><h3 style="font-size:18px;margin-bottom:8px;color:var(--text)">Sin datos de vuelo activos</h3><p style="font-size:14px">Usa <strong>+ Cargar MRK</strong> o la pestaña <strong>Datos</strong>.</p></div>';return}
+  if(!pts.length){c.innerHTML='<div style="text-align:center;padding:60px 20px;color:var(--text-dim)"><div style="font-size:48px;margin-bottom:16px;opacity:.4">✈️</div><h3 style="font-size:18px;margin-bottom:8px;color:var(--text)">Sin datos de vuelo activos</h3><p style="font-size:14px">Los vuelos se actualizan desde el generador Python.</p></div>';return}
   const matched=pts.filter(p=>p.matchedPoly),unm=pts.filter(p=>!p.matchedPoly);
   const vP=getAllPolygons().filter(p=>p.ESTADO==='VOLADO'),pP=getAllPolygons().filter(p=>p.ESTADO==='PARCIAL');
   const bf={};pts.forEach(p=>{if(!bf[p.file])bf[p.file]={t:0,m:0};bf[p.file].t++;if(p.matchedPoly)bf[p.file].m++});
@@ -816,21 +809,67 @@ function renderTimeline(){
 function switchTab(id,btn){document.querySelectorAll('[id^="tab-"]').forEach(e=>e.classList.add('hidden'));document.querySelectorAll('.tab').forEach(e=>e.classList.remove('active'));document.getElementById('tab-'+id).classList.remove('hidden');btn.classList.add('active');if(id==='map'&&map)setTimeout(()=>map.invalidateSize(),100)}
 
 // ========== EXPORTS ==========
-function exportReport(){
-  const polys=getAllPolygons(),th=polys.reduce((s,p)=>s+(p.SUP_HA||0),0),vh=polys.filter(p=>p.ESTADO==='VOLADO').reduce((s,p)=>s+(p.SUP_HA||0),0);
-  const now=new Date();let csv=`REPORTE AVANCE - HELIGRAFICS\nFecha: ${now.toLocaleDateString('es-CL')}\nAvance: ${th>0?(vh/th*100).toFixed(1):0}%\nTotal: ${th.toFixed(1)} ha\nVolado: ${vh.toFixed(1)} ha\n\nZONA,AREA,ID_PREDIO,NOM_PREDIO,TIPOUSO,SUP_HA,ESTADO,MRK_HITS\n`;
-  polys.forEach(p=>{csv+=`"${p.ZONA||''}","${p.AREA||''}","${p.ID_PREDIO||''}","${p.NOM_PREDIO||''}","${p.TIPOUSO||''}",${(p.SUP_HA||0).toFixed(2)},${p.ESTADO},${p._mrkHits||0}\n`});
-  dl(csv,`reporte_${now.toISOString().split('T')[0]}.csv`,'text/csv');
+async function exportFullKMZ(){
+  const polys=getAllPolygons(), pts=getActiveMRKPoints();
+  if(!polys.length) return alert('Sin datos para exportar');
+  const now=new Date();
+  const dateStr=now.toLocaleDateString('es-CL');
+  const th=polys.reduce((s,p)=>s+(p.SUP_HA||0),0);
+  const vh=polys.filter(p=>p.ESTADO==='VOLADO').reduce((s,p)=>s+(p.SUP_HA||0),0);
+  const pct=th>0?(vh/th*100).toFixed(1):0;
+
+  // KML color format: aabbggrr
+  const estadoColors={'PENDIENTE':'ff4535dc','VOLADO':'ff548719','PARCIAL':'ff0a8ed9','REVISION':'ffc26e1b'};
+  const estadoFill={'PENDIENTE':'664535dc','VOLADO':'66548719','PARCIAL':'660a8ed9','REVISION':'66c26e1b'};
+
+  let kml=`<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2">\n<Document>\n<name>Avance Vuelos Heligrafics — ${dateStr} (${pct}%)</name>\n<description>Generado por TeMapeo | ${polys.length} polígonos | ${fmt(th)} ha | Avance: ${pct}%</description>\n`;
+
+  Object.entries(estadoColors).forEach(([est,col])=>{
+    kml+=`<Style id="st_${est}"><LineStyle><color>${col}</color><width>2</width></LineStyle><PolyStyle><color>${estadoFill[est]}</color></PolyStyle></Style>\n`;
+  });
+  kml+=`<Style id="st_flight"><LineStyle><color>ff00a5f5</color><width>2</width></LineStyle></Style>\n`;
+
+  kmlFiles.forEach(kf=>{
+    const fnL=kf.name.toLowerCase();
+    let label=kf.name.replace(/\.(kml|kmz)$/i,'');
+    if(fnL.includes('chillan')||fnL.includes('chillán')||fnL.includes('norte')) label='Zona Norte — Chillán';
+    else if(fnL.includes('valdivia')||fnL.includes('sur')) label='Zona Sur — Valdivia';
+    const fHa=kf.polygons.reduce((s,p)=>s+(p.SUP_HA||0),0);
+    const fVol=kf.polygons.filter(p=>p.ESTADO==='VOLADO').reduce((s,p)=>s+(p.SUP_HA||0),0);
+    const fPct=fHa>0?(fVol/fHa*100).toFixed(1):0;
+    kml+=`<Folder><name>${label} (${fPct}% - ${fmt(fHa)} ha)</name>\n`;
+    ['VOLADO','PARCIAL','PENDIENTE'].forEach(est=>{
+      const ep=kf.polygons.filter(p=>p.ESTADO===est);
+      if(!ep.length) return;
+      const eHa=ep.reduce((s,p)=>s+(p.SUP_HA||0),0);
+      kml+=`<Folder><name>${est} (${ep.length} pol - ${fmt(eHa)} ha)</name>\n`;
+      ep.forEach(p=>{
+        if(!p.coords||p.coords.length<3) return;
+        const cs=p.coords.map(c=>`${c[1]},${c[0]},0`).join(' ')+` ${p.coords[0][1]},${p.coords[0][0]},0`;
+        kml+=`<Placemark>\n<name>${p.NOM_PREDIO||p.ID_PREDIO||'—'}</name>\n<description>Zona: ${p.ZONA||'—'}\nÁrea: ${p.AREA||'—'}\nTipo Uso: ${p.TIPOUSO||'—'}\nSuperficie: ${(p.SUP_HA||0).toFixed(1)} ha\nEstado: ${p.ESTADO}\nFotos MRK: ${p._mrkHits||0}</description>\n<styleUrl>#st_${p.ESTADO}</styleUrl>\n<Polygon><outerBoundaryIs><LinearRing><coordinates>${cs}</coordinates></LinearRing></outerBoundaryIs></Polygon>\n</Placemark>\n`;
+      });
+      kml+=`</Folder>\n`;
+    });
+    kml+=`</Folder>\n`;
+  });
+
+  if(pts.length){
+    kml+=`<Folder><name>Líneas de Vuelo (${pts.length} foto-centros)</name>\n`;
+    const bf={};pts.forEach(p=>{if(!bf[p.file])bf[p.file]=[];bf[p.file].push(p)});
+    Object.entries(bf).forEach(([f,ps])=>{
+      kml+=`<Folder><name>${f} (${ps.length} pts)</name>\n`;
+      kml+=`<Placemark><name>Línea ${f}</name><styleUrl>#st_flight</styleUrl><LineString><coordinates>\n`;
+      ps.forEach(p=>{kml+=`${p.lng},${p.lat},60\n`});
+      kml+=`</coordinates></LineString></Placemark>\n</Folder>\n`;
+    });
+    kml+=`</Folder>\n`;
+  }
+  kml+=`</Document>\n</kml>`;
+  const zip=new JSZip();zip.file('doc.kml',kml);
+  const blob=await zip.generateAsync({type:'blob'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`avance_heligrafics_${now.toISOString().split('T')[0]}.kmz`;a.click();
 }
-async function exportMRKasKMZ(){
-  const pts=getActiveMRKPoints();if(!pts.length)return alert('Sin MRK activos');
-  let kml=`<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>Líneas de Vuelo MRK - TeMapeo</name>\n<Style id="fc"><IconStyle><color>ff00aaff</color><scale>0.4</scale><Icon><href>http://maps.google.com/mapfiles/kml/shapes/placemark_circle.png</href></Icon></IconStyle></Style>\n<Style id="fl"><LineStyle><color>ff00a5f5</color><width>2</width></LineStyle></Style>\n`;
-  const bf={};pts.forEach(p=>{if(!bf[p.file])bf[p.file]=[];bf[p.file].push(p)});
-  Object.entries(bf).forEach(([f,ps])=>{kml+=`<Folder><name>${f}</name>\n<Placemark><name>Línea ${f}</name><styleUrl>#fl</styleUrl><LineString><coordinates>\n`;ps.forEach(p=>{kml+=`${p.lng},${p.lat},60\n`});kml+=`</coordinates></LineString></Placemark>\n`;ps.forEach((p,i)=>{kml+=`<Placemark><name>FC-${i+1}</name><styleUrl>#fc</styleUrl><Point><coordinates>${p.lng},${p.lat},60</coordinates></Point></Placemark>\n`});kml+=`</Folder>\n`});
-  kml+=`</Document></kml>`;
-  const zip=new JSZip();zip.file('doc.kml',kml);const blob=await zip.generateAsync({type:'blob'});
-  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`lineas_vuelo_${new Date().toISOString().split('T')[0]}.kmz`;a.click();
-}
+
 
 // ========== HELPERS ==========
 function fmt(n){return n.toLocaleString('es-CL',{maximumFractionDigits:1})}
