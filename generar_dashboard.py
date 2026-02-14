@@ -390,21 +390,53 @@ def main():
     
     # 2. Procesar MRKs
     print("\n✈️  Procesando archivos MRK...")
-    mrk_extensions = ['*.mrk', '*.csv', '*.txt', '*.MRK', '*.CSV', '*.TXT']
+    
+    # First, extract any ZIP files found in MRK_DIR
+    zip_files = sorted(MRK_DIR.glob('*.zip')) + sorted(MRK_DIR.glob('*.ZIP'))
+    for zf in zip_files:
+        import zipfile
+        try:
+            # Extract to a subfolder with same name as zip (without extension)
+            extract_dir = MRK_DIR / zf.stem
+            if not extract_dir.exists():
+                print(f"   📦 Descomprimiendo {zf.name}...")
+                with zipfile.ZipFile(zf, 'r') as z:
+                    z.extractall(extract_dir)
+                print(f"      → {sum(1 for _ in extract_dir.rglob('*.MRK')) + sum(1 for _ in extract_dir.rglob('*.mrk'))} archivos MRK extraídos")
+            else:
+                print(f"   📦 {zf.name} ya descomprimido → {extract_dir.name}/")
+        except Exception as e:
+            print(f"   ⚠️  Error descomprimiendo {zf.name}: {e}")
+    
+    # Now search recursively for MRK files in all subdirectories
+    mrk_extensions = ['*.mrk', '*.MRK']
     mrk_files = []
     for ext in mrk_extensions:
-        mrk_files.extend(MRK_DIR.glob(ext))
+        mrk_files.extend(MRK_DIR.rglob(ext))
     mrk_files = sorted(set(mrk_files))
+    
+    # Group by parent folder for display
+    mrk_by_folder = {}
+    for mf in mrk_files:
+        folder = mf.parent.name if mf.parent != MRK_DIR else '(raíz)'
+        if folder not in mrk_by_folder:
+            mrk_by_folder[folder] = []
+        mrk_by_folder[folder].append(mf)
     
     all_mrk_data = {}
     all_mrk_points = []
     if mrk_files:
-        for mf in mrk_files:
-            pts = parse_mrk(mf)
-            if pts:
-                all_mrk_data[mf.name] = pts
-                all_mrk_points.extend(pts)
-                print(f"   ✅ {mf.name}: {len(pts)} foto-centros")
+        for folder, files in sorted(mrk_by_folder.items()):
+            folder_pts = 0
+            for mf in files:
+                pts = parse_mrk(mf)
+                if pts:
+                    # Use folder/filename as key to avoid name collisions
+                    rel_name = f"{mf.parent.name}/{mf.name}" if mf.parent != MRK_DIR else mf.name
+                    all_mrk_data[rel_name] = pts
+                    all_mrk_points.extend(pts)
+                    folder_pts += len(pts)
+            print(f"   ✅ {folder}: {len(files)} archivos, {folder_pts:,} foto-centros")
         
         if all_mrk_points:
             print(f"\n   📊 Total: {len(all_mrk_points)} foto-centros")
