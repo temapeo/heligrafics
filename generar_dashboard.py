@@ -196,7 +196,12 @@ def calc_area_ha(coords):
 # PARSEO MRK
 # ============================================================
 def parse_mrk(filepath):
-    """Parsea un archivo MRK/CSV y extrae foto-centros."""
+    """Parsea un archivo MRK/CSV y extrae foto-centros.
+    
+    Soporta múltiples formatos:
+    - DJI Timestamp MRK: "1  479823.980  [2405]  ... -36.67002938,Lat  -71.69181229,Lon  733.930,Ellh ..."
+    - CSV genérico: lat,lng o lng,lat
+    """
     filename = os.path.basename(filepath)
     points = []
     
@@ -206,29 +211,43 @@ def parse_mrk(filepath):
             if not line:
                 continue
             # Saltar headers
-            if i == 0 and ('lat' in line.lower() or line.startswith('#')):
+            if i == 0 and ('lat' in line.lower() and 'lon' in line.lower()):
                 continue
             
-            parts = re.split(r'[,\t\s]+', line)
             lat, lng = None, None
             
-            for j in range(len(parts) - 1):
+            # Formato DJI: buscar patrones "valor,Lat" y "valor,Lon"
+            lat_match = re.search(r'([-\d.]+),Lat', line)
+            lon_match = re.search(r'([-\d.]+),Lon', line)
+            
+            if lat_match and lon_match:
                 try:
-                    a, b = float(parts[j]), float(parts[j + 1])
-                    if (abs(a) > 10 and abs(a) <= 90 and 
-                        abs(b) > 10 and abs(b) <= 180):
-                        lat, lng = a, b
-                        break
+                    lat = float(lat_match.group(1))
+                    lng = float(lon_match.group(1))
                 except ValueError:
                     pass
             
+            # Fallback: buscar dos números consecutivos que parezcan coordenadas
+            if lat is None or lng is None:
+                parts = re.split(r'[,\t\s]+', line)
+                for j in range(len(parts) - 1):
+                    try:
+                        a, b = float(parts[j]), float(parts[j + 1])
+                        if (abs(a) > 10 and abs(a) <= 90 and 
+                            abs(b) > 10 and abs(b) <= 180):
+                            lat, lng = a, b
+                            break
+                    except ValueError:
+                        pass
+            
             if lat is not None and lng is not None:
-                points.append({
-                    'lat': round(lat, 7),
-                    'lng': round(lng, 7),
-                    'file': filename,
-                    'index': i
-                })
+                if abs(lat) <= 90 and abs(lng) <= 180:
+                    points.append({
+                        'lat': round(lat, 7),
+                        'lng': round(lng, 7),
+                        'file': filename,
+                        'index': i
+                    })
     
     return points
 
