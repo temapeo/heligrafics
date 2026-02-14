@@ -60,8 +60,8 @@ OUTPUT_DIR = PROYECTO_DIR / "docs"  # GitHub Pages sirve desde /docs
 RENDIMIENTO_HA_DIA = 100
 EQUIPOS = 2
 FECHA_INICIO = "2026-02-15"
-FOTOS_POR_HA = 80
-UMBRAL_VOLADO = 0.7  # 70% de fotos esperadas = VOLADO
+FOTOS_POR_HA = 55
+UMBRAL_VOLADO = 0.65  # 65% de fotos esperadas = VOLADO (~36 fotos/ha mínimo)
 
 
 # ============================================================
@@ -284,15 +284,48 @@ def process_intersections(polygons, mrk_points):
                 pt['matched'] = True
                 break
     
+    # Paso 1: Evaluar cada polígono individualmente
     for p in polygons:
         hits = p.get('_mrkHits', 0)
         expected = p.get('SUP_HA', 0) * FOTOS_POR_HA
         if hits == 0:
-            p['ESTADO'] = 'PENDIENTE'
+            p['_polyEstado'] = 'PENDIENTE'
         elif expected > 0 and hits >= expected * UMBRAL_VOLADO:
-            p['ESTADO'] = 'VOLADO'
+            p['_polyEstado'] = 'VOLADO'
         else:
-            p['ESTADO'] = 'PARCIAL'
+            p['_polyEstado'] = 'PARCIAL'
+    
+    # Paso 2: Propagar estado a nivel de predio (NOM_PREDIO)
+    # Si un predio tiene al menos un polígono PENDIENTE/PARCIAL,
+    # todo el predio baja a PARCIAL (si tiene algún hit) o PENDIENTE (si no tiene ninguno)
+    from collections import defaultdict
+    predios = defaultdict(list)
+    for p in polygons:
+        key = p.get('NOM_PREDIO', p.get('ID_PREDIO', ''))
+        if key:
+            predios[key].append(p)
+    
+    for predio, polys in predios.items():
+        estados = set(p['_polyEstado'] for p in polys)
+        total_hits = sum(p.get('_mrkHits', 0) for p in polys)
+        
+        if estados == {'VOLADO'}:
+            # Todos volados → predio VOLADO
+            predio_estado = 'VOLADO'
+        elif total_hits == 0:
+            # Ningún hit → predio PENDIENTE
+            predio_estado = 'PENDIENTE'
+        else:
+            # Mezcla de estados → predio PARCIAL
+            predio_estado = 'PARCIAL'
+        
+        for p in polys:
+            p['ESTADO'] = predio_estado
+    
+    # Polígonos sin predio: usar estado individual
+    for p in polygons:
+        if 'ESTADO' not in p or not p.get('NOM_PREDIO', p.get('ID_PREDIO', '')):
+            p['ESTADO'] = p.get('_polyEstado', 'PENDIENTE')
 
 
 # ============================================================
@@ -468,12 +501,23 @@ def main():
             volados = sum(1 for p in all_polygons if p.get('ESTADO') == 'VOLADO')
             parciales = sum(1 for p in all_polygons if p.get('ESTADO') == 'PARCIAL')
             volado_ha = sum(p.get('SUP_HA', 0) for p in all_polygons if p.get('ESTADO') == 'VOLADO')
+            parcial_ha = sum(p.get('SUP_HA', 0) for p in all_polygons if p.get('ESTADO') == 'PARCIAL')
+            cubierta_ha = volado_ha + parcial_ha
+            
+            # Contar predios
+            from collections import Counter
+            pred_estados = {}
+            for p in all_polygons:
+                key = p.get('NOM_PREDIO', p.get('ID_PREDIO', ''))
+                if key:
+                    pred_estados[key] = p.get('ESTADO', 'PENDIENTE')
+            n_pred_volado = sum(1 for e in pred_estados.values() if e == 'VOLADO')
+            n_pred_parcial = sum(1 for e in pred_estados.values() if e == 'PARCIAL')
             
             print(f"   ✅ {matched}/{len(all_mrk_points)} foto-centros dentro de polígonos")
-            print(f"   ✅ {volados} polígonos volados ({volado_ha:,.1f} ha)")
-            print(f"   ⚡ {parciales} polígonos parciales")
-            pct = (volado_ha / total_ha * 100) if total_ha > 0 else 0
-            print(f"   📊 Avance: {pct:.1f}%")
+            print(f"   ✅ {n_pred_volado} predios volados ({volado_ha:,.1f} ha)")
+            print(f"   🔶 {n_pred_parcial} predios parciales ({parcial_ha:,.1f} ha)")
+            print(f"   📊 Superficie cubierta: {cubierta_ha:,.1f} ha ({cubierta_ha/total_ha*100:.1f}%)")
     else:
         print("   ℹ️  Sin archivos MRK (avance al 0%)")
     

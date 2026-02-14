@@ -55,6 +55,9 @@ header{background:linear-gradient(135deg,#fff 0%,#f0f4fa 100%);border-bottom:1px
 .grid-4{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:20px}
 .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px}
 .grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:20px}
+.grid-5{display:grid;grid-template-columns:repeat(5,1fr);gap:16px;margin-bottom:20px}
+@media(max-width:900px){.grid-5{grid-template-columns:repeat(3,1fr)}}
+@media(max-width:600px){.grid-5{grid-template-columns:1fr 1fr}}
 
 /* CARD */
 .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:18px;box-shadow:var(--shadow)}
@@ -66,6 +69,7 @@ header{background:linear-gradient(135deg,#fff 0%,#f0f4fa 100%);border-bottom:1px
 .metric-card::before{content:'';position:absolute;top:0;left:0;right:0;height:3px}
 .metric-card.blue::before{background:var(--accent)}
 .metric-card.green::before{background:var(--success)}
+.metric-card.orange::before{background:#e67e22}
 .metric-card.yellow::before{background:var(--warning)}
 .metric-card.purple::before{background:var(--purple)}
 .metric-label{font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.6px;margin-bottom:6px}
@@ -73,6 +77,7 @@ header{background:linear-gradient(135deg,#fff 0%,#f0f4fa 100%);border-bottom:1px
 .metric-sub{font-size:12px;color:var(--text-dim);margin-top:4px}
 .metric-card.blue .metric-value{color:var(--accent)}
 .metric-card.green .metric-value{color:var(--success)}
+.metric-card.orange .metric-value{color:#e67e22}
 .metric-card.yellow .metric-value{color:var(--warning)}
 .metric-card.purple .metric-value{color:var(--purple)}
 
@@ -93,6 +98,8 @@ header{background:linear-gradient(135deg,#fff 0%,#f0f4fa 100%);border-bottom:1px
 .popup-row{display:flex;justify-content:space-between;padding:3px 0}
 .popup-label{color:var(--text-dim)}
 .popup-value{font-weight:600;font-family:'JetBrains Mono',monospace;font-size:12px}
+.predio-label{background:none!important;border:none!important;box-shadow:none!important}
+.predio-label span{font-size:9px;font-weight:600;color:#1a2440;background:rgba(255,255,255,.85);padding:1px 4px;border-radius:3px;white-space:nowrap;pointer-events:none;text-shadow:0 0 2px #fff}
 
 /* TABS */
 .tabs{display:flex;gap:4px;background:var(--surface2);padding:4px;border-radius:8px;margin-bottom:16px;border:1px solid var(--border)}
@@ -243,11 +250,12 @@ tr:hover td{background:var(--surface2)}
     <!-- OVERVIEW -->
     <div id="tab-overview">
       <div class="section-title">Métricas generales</div>
-      <div class="grid-4">
+      <div class="grid-5">
         <div class="metric-card blue"><div class="metric-label">Superficie Total</div><div class="metric-value" id="mTotalHa">—</div><div class="metric-sub" id="mTotalPoly">—</div></div>
-        <div class="metric-card green"><div class="metric-label">Superficie Volada</div><div class="metric-value" id="mVoladoHa">0 ha</div><div class="metric-sub" id="mVoladoPoly">0 completados</div></div>
+        <div class="metric-card green"><div class="metric-label">Volada (completa)</div><div class="metric-value" id="mVoladoHa">0 ha</div><div class="metric-sub" id="mVoladoPoly">0 predios</div></div>
+        <div class="metric-card orange"><div class="metric-label">Parcial (en curso)</div><div class="metric-value" id="mParcialHa">0 ha</div><div class="metric-sub" id="mParcialPoly">0 predios</div></div>
         <div class="metric-card yellow"><div class="metric-label">Pendiente</div><div class="metric-value" id="mPendienteHa">—</div><div class="metric-sub" id="mPendienteDias">—</div></div>
-        <div class="metric-card purple"><div class="metric-label">Avance</div><div class="metric-value" id="mAvancePct">0%</div><div class="metric-sub">Inicio: 15-Feb-2026</div></div>
+        <div class="metric-card purple"><div class="metric-label">Avance</div><div class="metric-value" id="mAvancePct">0%</div><div class="metric-sub" id="mAvanceSub">Inicio: 15-Feb-2026</div></div>
       </div>
       <div id="kmlProgressCards"></div>
       <div class="card">
@@ -643,18 +651,35 @@ function populateFilters() {
 function updateMetrics() {
   const polys=getAllPolygons();
   const totalHa=polys.reduce((s,p)=>s+(p.SUP_HA||0),0);
+  
+  // Volado completo (predios 100% cerrados)
   const volP=polys.filter(p=>p.ESTADO==='VOLADO');
   const volHa=volP.reduce((s,p)=>s+(p.SUP_HA||0),0);
-  const pendHa=totalHa-volHa;
-  const pct=totalHa>0?(volHa/totalHa*100):0;
+  const volPredios=new Set(volP.map(p=>p.NOM_PREDIO||p.ID_PREDIO).filter(Boolean)).size;
+  
+  // Parcial (predios con cobertura pero incompletos)
+  const parP=polys.filter(p=>p.ESTADO==='PARCIAL');
+  const parHa=parP.reduce((s,p)=>s+(p.SUP_HA||0),0);
+  const parPredios=new Set(parP.map(p=>p.NOM_PREDIO||p.ID_PREDIO).filter(Boolean)).size;
+  
+  // Pendiente (sin ningún vuelo)
+  const pendHa=totalHa-volHa-parHa;
+  
+  // Avance considera volado + parcial (superficie efectivamente cubierta)
+  const cubiertaHa=volHa+parHa;
+  const pct=totalHa>0?(cubiertaHa/totalHa*100):0;
   const dias=Math.ceil(pendHa/(P.rendHaDia*P.equipos));
+  
   document.getElementById('mTotalHa').textContent=fmt(totalHa)+' ha';
   document.getElementById('mTotalPoly').textContent=polys.length+' polígonos';
   document.getElementById('mVoladoHa').textContent=fmt(volHa)+' ha';
-  document.getElementById('mVoladoPoly').textContent=volP.length+' completados';
+  document.getElementById('mVoladoPoly').textContent=volPredios+' predios';
+  document.getElementById('mParcialHa').textContent=fmt(parHa)+' ha';
+  document.getElementById('mParcialPoly').textContent=parPredios+' predios';
   document.getElementById('mPendienteHa').textContent=fmt(pendHa)+' ha';
   document.getElementById('mPendienteDias').textContent=`~${dias} días hábiles`;
   document.getElementById('mAvancePct').textContent=pct.toFixed(1)+'%';
+  document.getElementById('mAvanceSub').textContent=`${fmt(cubiertaHa)} ha cubiertas`;
   renderKMLProgressCards();
 }
 function renderKMLProgressCards(){
@@ -666,23 +691,28 @@ function renderKMLProgressCards(){
     const ps=f.polygons;
     const th=ps.reduce((s,p)=>s+(p.SUP_HA||0),0);
     const vh=ps.filter(p=>p.ESTADO==='VOLADO').reduce((s,p)=>s+(p.SUP_HA||0),0);
-    const pct=th>0?(vh/th*100):0;
+    const ph=ps.filter(p=>p.ESTADO==='PARCIAL').reduce((s,p)=>s+(p.SUP_HA||0),0);
+    const cubierta=vh+ph;
+    const pct=th>0?(cubierta/th*100):0;
+    const pctVol=th>0?(vh/th*100):0;
     const pr=new Set(ps.map(p=>p.ID_PREDIO||p.NOM_PREDIO).filter(Boolean));
-    const d=Math.ceil(th/(P.rendHaDia*P.equipos));
-    // Determine label
+    const d=Math.ceil((th-cubierta)/(P.rendHaDia*P.equipos));
     const fnL=f.name.toLowerCase();
     let label=f.name.replace(/\.(kml|kmz)$/i,'');
     let icon='📄';
     if(fnL.includes('chillan')||fnL.includes('chillán')||fnL.includes('norte')){icon='🔵';label='Zona Norte — Chillán'}
     else if(fnL.includes('valdivia')||fnL.includes('sur')){icon='🟣';label='Zona Sur — Valdivia'}
     const fromCalc = f.polygons.filter(p=>p._supSource==='calc').length;
-    const supWarn = fromCalc>0 ? `<div style="font-size:10px;color:var(--warning);margin-top:4px">⚠️ ${fromCalc} polígonos con sup. calculada (sin SUP_HA en KML)</div>` : '';
+    const supWarn = fromCalc>0 ? `<div style="font-size:10px;color:var(--warning);margin-top:4px">⚠️ ${fromCalc} polígonos con sup. calculada</div>` : '';
     html+=`<div class="card">
       <div class="progress-header"><span class="progress-title">${icon} ${label}</span><span class="progress-pct">${pct.toFixed(1)}%</span></div>
-      <div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>
-      <div class="progress-detail"><span>${fmt(vh)} / ${fmt(th)} ha</span><span>Est: ${d} días</span></div>
+      <div class="progress-bar" style="position:relative">
+        <div class="progress-fill" style="width:${pct}%;background:#e67e22;border-radius:6px"></div>
+        <div class="progress-fill" style="width:${pctVol}%;position:absolute;top:0;left:0;border-radius:6px"></div>
+      </div>
+      <div class="progress-detail"><span style="color:var(--success)">✅ ${fmt(vh)} ha</span><span style="color:#e67e22">🔶 ${fmt(ph)} ha</span><span>📊 ${fmt(cubierta)} / ${fmt(th)} ha</span></div>
       <div style="font-size:11px;color:var(--text-muted);margin-top:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${f.name}">📎 ${f.name}</div>${supWarn}
-      <div class="zone-stats" style="margin-top:10px"><div><div class="zone-stat-label">Predios</div><div class="zone-stat-value">${pr.size}</div></div><div><div class="zone-stat-label">Polígonos</div><div class="zone-stat-value">${ps.length}</div></div></div>
+      <div class="zone-stats" style="margin-top:10px"><div><div class="zone-stat-label">Predios</div><div class="zone-stat-value">${pr.size}</div></div><div><div class="zone-stat-label">Polígonos</div><div class="zone-stat-value">${ps.length}</div></div><div><div class="zone-stat-label">Est. restante</div><div class="zone-stat-value">${d} días</div></div></div>
     </div>`;
   });
   html+='</div>';
@@ -722,18 +752,77 @@ function updateMap(){
   if(estado) f=f.filter(p=>p.ESTADO===estado);
   if(polyLayer){map.removeLayer(polyLayer);polyLayer=null}
   if(mrkLayer){map.removeLayer(mrkLayer);mrkLayer=null}
-  const cols={estado:{'PENDIENTE':'#dc3545','VOLADO':'#198754','PARCIAL':'#d98e0a','REVISION':'#1b6ec2'},zona:{'Chillán':'#1b6ec2','Valdivia':'#7c3aed'},tipouso:{}};
+  if(window._highlightLayer){map.removeLayer(window._highlightLayer);window._highlightLayer=null}
+  const cols={estado:{'PENDIENTE':'#dc3545','VOLADO':'#198754','PARCIAL':'#e67e22','REVISION':'#1b6ec2'},zona:{'Chillán':'#1b6ec2','Valdivia':'#7c3aed'},tipouso:{}};
   const tus=[...new Set(f.map(p=>p.TIPOUSO).filter(Boolean))];
   const tc=['#1b6ec2','#198754','#d98e0a','#7c3aed','#0d9488','#dc3545','#c2185b','#e65100'];
   tus.forEach((t,i)=>{cols.tipouso[t]=tc[i%tc.length]});
+  
+  // Index polygons by predio for click highlight
+  const predioIndex={};
+  f.forEach(p=>{const key=p.NOM_PREDIO||p.ID_PREDIO||'';if(key){if(!predioIndex[key])predioIndex[key]=[];predioIndex[key].push(p)}});
+  
   const g=L.featureGroup();
-  f.forEach(p=>{if(!p.coords||p.coords.length<3)return;let c;if(colorBy==='estado')c=cols.estado[p.ESTADO]||'#7a889e';else if(colorBy==='zona')c=cols.zona[p.ZONA]||'#7a889e';else c=cols.tipouso[p.TIPOUSO]||'#7a889e';const poly=L.polygon(p.coords,{color:c,fillColor:c,fillOpacity:.3,weight:1.8,opacity:.9});poly.bindPopup(`<div style="min-width:200px"><div style="font-weight:700;font-size:14px;margin-bottom:8px">${p.NOM_PREDIO||'—'}</div><div class="popup-row"><span class="popup-label">Zona</span><span class="popup-value">${p.ZONA||'—'}</span></div><div class="popup-row"><span class="popup-label">Área</span><span class="popup-value">${p.AREA||'—'}</span></div><div class="popup-row"><span class="popup-label">Sup.</span><span class="popup-value">${(p.SUP_HA||0).toFixed(1)} ha</span></div><div class="popup-row"><span class="popup-label">Estado</span><span class="popup-value">${p.ESTADO}</span></div>${p._mrkHits?`<div class="popup-row"><span class="popup-label">Fotos</span><span class="popup-value">${p._mrkHits}</span></div>`:''}</div>`);poly.addTo(g)});
+  f.forEach(p=>{
+    if(!p.coords||p.coords.length<3)return;
+    let c;if(colorBy==='estado')c=cols.estado[p.ESTADO]||'#7a889e';else if(colorBy==='zona')c=cols.zona[p.ZONA]||'#7a889e';else c=cols.tipouso[p.TIPOUSO]||'#7a889e';
+    const poly=L.polygon(p.coords,{color:c,fillColor:c,fillOpacity:.3,weight:1.8,opacity:.9});
+    
+    // Build predio-level popup
+    const predioKey=p.NOM_PREDIO||p.ID_PREDIO||'';
+    const predioPolys=predioIndex[predioKey]||[p];
+    const predioHa=predioPolys.reduce((s,pp)=>s+(pp.SUP_HA||0),0);
+    const predioHits=predioPolys.reduce((s,pp)=>s+(pp._mrkHits||0),0);
+    const nPol=predioPolys.length;
+    const nVol=predioPolys.filter(pp=>pp._polyEstado==='VOLADO').length;
+    const nPar=predioPolys.filter(pp=>pp._polyEstado==='PARCIAL').length;
+    const nPend=predioPolys.filter(pp=>pp._polyEstado==='PENDIENTE').length;
+    
+    poly.bindPopup(`<div style="min-width:220px">
+      <div style="font-weight:700;font-size:14px;margin-bottom:8px;border-bottom:2px solid ${c};padding-bottom:6px">${predioKey||'—'}</div>
+      <div class="popup-row"><span class="popup-label">Estado predio</span><span class="popup-value" style="font-weight:700;color:${cols.estado[p.ESTADO]||'#666'}">${p.ESTADO}</span></div>
+      <div class="popup-row"><span class="popup-label">Zona / Área</span><span class="popup-value">${p.ZONA||'—'} / ${p.AREA||'—'}</span></div>
+      <div class="popup-row"><span class="popup-label">Sup. predio</span><span class="popup-value">${predioHa.toFixed(1)} ha (${nPol} pol.)</span></div>
+      <div style="margin:8px 0 4px;font-size:11px;color:var(--text-muted);text-transform:uppercase">Polígonos del predio:</div>
+      <div class="popup-row"><span class="popup-label">✅ Volados</span><span class="popup-value">${nVol}</span></div>
+      <div class="popup-row"><span class="popup-label">🔶 Parciales</span><span class="popup-value">${nPar}</span></div>
+      <div class="popup-row"><span class="popup-label">🔴 Pendientes</span><span class="popup-value">${nPend}</span></div>
+      <div class="popup-row"><span class="popup-label">📷 Fotos MRK</span><span class="popup-value">${predioHits}</span></div>
+    </div>`);
+    
+    // On click, highlight all polygons of same predio
+    poly.on('click',function(){
+      if(window._highlightLayer){map.removeLayer(window._highlightLayer)}
+      window._highlightLayer=L.featureGroup();
+      predioPolys.forEach(pp=>{
+        if(pp.coords&&pp.coords.length>=3){
+          L.polygon(pp.coords,{color:'#fff',fillColor:'#1b6ec2',fillOpacity:.15,weight:3,opacity:1,dashArray:'6,3'}).addTo(window._highlightLayer);
+        }
+      });
+      window._highlightLayer.addTo(map);
+    });
+    
+    poly.addTo(g);
+  });
+  
+  // Add predio labels at zoom level
+  f.forEach(p=>{
+    if(!p.centroid||!p.NOM_PREDIO)return;
+    // Only show one label per predio
+    const key=p.NOM_PREDIO;
+    if(p._file && predioIndex[key] && predioIndex[key][0]!==p) return;
+    const icon=L.divIcon({className:'predio-label',html:`<span>${key}</span>`,iconSize:[0,0]});
+    L.marker(p.centroid,{icon:icon,interactive:false}).addTo(g);
+  });
+  
   if(showMrk){
     const pts=getActiveMRKPoints();
     if(pts.length){mrkLayer=L.featureGroup();const bf={};pts.forEach(p=>{if(!bf[p.file])bf[p.file]=[];bf[p.file].push([p.lat,p.lng])});Object.values(bf).forEach(ps=>{L.polyline(ps,{color:'#d98e0a',weight:2,opacity:.7,dashArray:'4,4'}).addTo(mrkLayer)});pts.forEach(p=>{L.circleMarker([p.lat,p.lng],{radius:1.5,color:'#d98e0a',fillColor:'#d98e0a',fillOpacity:.9,weight:0}).addTo(mrkLayer)});mrkLayer.addTo(map)}
   }
   polyLayer=g;g.addTo(map);
   if(g.getLayers().length) map.fitBounds(g.getBounds(),{padding:[30,30]});
+  // Click on map background to clear highlight
+  map.on('click',function(e){if(window._highlightLayer){map.removeLayer(window._highlightLayer);window._highlightLayer=null}});
   const th=f.reduce((s,p)=>s+(p.SUP_HA||0),0);
   document.getElementById('mapPolyCount').textContent=f.length;
   document.getElementById('mapHaCount').textContent=fmt(th)+' ha';
