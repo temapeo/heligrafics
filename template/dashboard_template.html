@@ -279,7 +279,7 @@ tr:hover td{background:var(--surface2)}
         <select class="filter-select" id="mapColorBy" onchange="updateMap()"><option value="estado">Color por Estado</option><option value="zona">Color por Zona</option><option value="tipouso">Color por Tipo Uso</option></select>
         <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text-dim);cursor:pointer"><input type="checkbox" id="showMRK" onchange="updateMap()" style="accent-color:var(--accent)"> Líneas MRK</label>
       </div>
-      <div id="map"></div>
+      <div id="mapContainer" style="position:relative"><div id="map"></div></div>
       <div class="grid-3" style="margin-top:14px">
         <div class="card" style="text-align:center"><div class="zone-stat-label">Polígonos</div><div class="zone-stat-value" id="mapPolyCount">—</div></div>
         <div class="card" style="text-align:center"><div class="zone-stat-label">Superficie</div><div class="zone-stat-value" id="mapHaCount">—</div></div>
@@ -735,6 +735,7 @@ function renderTable(){
 }
 
 // ========== MAP ==========
+function closeMapPanel(){const p=document.getElementById('mapInfoPanel');if(p)p.remove()}
 function initMap(){
   if(map){map.remove();map=null}
   map=L.map('map',{zoomControl:true,attributionControl:false});
@@ -765,33 +766,16 @@ function updateMap(){
   const g=L.featureGroup();
   f.forEach(p=>{
     if(!p.coords||p.coords.length<3)return;
+    // Color always uses ESTADO (predio-level), not _polyEstado
     let c;if(colorBy==='estado')c=cols.estado[p.ESTADO]||'#7a889e';else if(colorBy==='zona')c=cols.zona[p.ZONA]||'#7a889e';else c=cols.tipouso[p.TIPOUSO]||'#7a889e';
     const poly=L.polygon(p.coords,{color:c,fillColor:c,fillOpacity:.3,weight:1.8,opacity:.9});
     
-    // Build predio-level popup
     const predioKey=p.NOM_PREDIO||p.ID_PREDIO||'';
     const predioPolys=predioIndex[predioKey]||[p];
-    const predioHa=predioPolys.reduce((s,pp)=>s+(pp.SUP_HA||0),0);
-    const predioHits=predioPolys.reduce((s,pp)=>s+(pp._mrkHits||0),0);
-    const nPol=predioPolys.length;
-    const nVol=predioPolys.filter(pp=>pp._polyEstado==='VOLADO').length;
-    const nPar=predioPolys.filter(pp=>pp._polyEstado==='PARCIAL').length;
-    const nPend=predioPolys.filter(pp=>pp._polyEstado==='PENDIENTE').length;
     
-    poly.bindPopup(`<div style="min-width:220px">
-      <div style="font-weight:700;font-size:14px;margin-bottom:8px;border-bottom:2px solid ${c};padding-bottom:6px">${predioKey||'—'}</div>
-      <div class="popup-row"><span class="popup-label">Estado predio</span><span class="popup-value" style="font-weight:700;color:${cols.estado[p.ESTADO]||'#666'}">${p.ESTADO}</span></div>
-      <div class="popup-row"><span class="popup-label">Zona / Área</span><span class="popup-value">${p.ZONA||'—'} / ${p.AREA||'—'}</span></div>
-      <div class="popup-row"><span class="popup-label">Sup. predio</span><span class="popup-value">${predioHa.toFixed(1)} ha (${nPol} pol.)</span></div>
-      <div style="margin:8px 0 4px;font-size:11px;color:var(--text-muted);text-transform:uppercase">Polígonos del predio:</div>
-      <div class="popup-row"><span class="popup-label">✅ Volados</span><span class="popup-value">${nVol}</span></div>
-      <div class="popup-row"><span class="popup-label">🔶 Parciales</span><span class="popup-value">${nPar}</span></div>
-      <div class="popup-row"><span class="popup-label">🔴 Pendientes</span><span class="popup-value">${nPend}</span></div>
-      <div class="popup-row"><span class="popup-label">📷 Fotos MRK</span><span class="popup-value">${predioHits}</span></div>
-    </div>`);
-    
-    // On click, highlight all polygons of same predio
-    poly.on('click',function(){
+    // On click: highlight predio + show info panel
+    poly.on('click',function(e){
+      L.DomEvent.stopPropagation(e);
       if(window._highlightLayer){map.removeLayer(window._highlightLayer)}
       window._highlightLayer=L.featureGroup();
       predioPolys.forEach(pp=>{
@@ -800,6 +784,39 @@ function updateMap(){
         }
       });
       window._highlightLayer.addTo(map);
+      
+      // Show info panel
+      const predioHa=predioPolys.reduce((s,pp)=>s+(pp.SUP_HA||0),0);
+      const predioHits=predioPolys.reduce((s,pp)=>s+(pp._mrkHits||0),0);
+      const nPol=predioPolys.length;
+      const nVol=predioPolys.filter(pp=>pp._polyEstado==='VOLADO').length;
+      const nPar=predioPolys.filter(pp=>pp._polyEstado==='PARCIAL').length;
+      const nPend=predioPolys.filter(pp=>pp._polyEstado==='PENDIENTE').length;
+      const volHa=predioPolys.filter(pp=>pp._polyEstado==='VOLADO').reduce((s,pp)=>s+(pp.SUP_HA||0),0);
+      const estColor=cols.estado[p.ESTADO]||'#666';
+      
+      let panel=document.getElementById('mapInfoPanel');
+      if(!panel){
+        panel=document.createElement('div');
+        panel.id='mapInfoPanel';
+        document.getElementById('mapContainer').appendChild(panel);
+      }
+      panel.style.cssText='position:absolute;top:10px;right:10px;z-index:1000;background:rgba(255,255,255,.95);border-radius:10px;padding:14px 16px;box-shadow:0 4px 20px rgba(0,0,0,.15);max-width:260px;font-family:DM Sans,sans-serif;backdrop-filter:blur(8px)';
+      panel.innerHTML=`
+        <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:8px">
+          <div style="font-weight:700;font-size:14px;line-height:1.3;flex:1">${predioKey||'—'}</div>
+          <button onclick="closeMapPanel()" style="background:none;border:none;cursor:pointer;font-size:16px;color:#999;padding:0 0 0 8px">✕</button>
+        </div>
+        <div style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700;color:#fff;background:${estColor};margin-bottom:8px">${p.ESTADO}</div>
+        <div style="font-size:12px;color:#666;margin-bottom:6px">${p.ZONA||'—'} · ${p.AREA||'—'}</div>
+        <div style="font-size:12px;border-top:1px solid #eee;padding-top:8px;margin-top:4px">
+          <div style="display:flex;justify-content:space-between;margin:3px 0"><span style="color:#666">Superficie</span><span style="font-weight:600;font-family:JetBrains Mono,monospace">${predioHa.toFixed(1)} ha</span></div>
+          <div style="display:flex;justify-content:space-between;margin:3px 0"><span style="color:#666">Polígonos</span><span style="font-weight:600;font-family:JetBrains Mono,monospace">${nPol}</span></div>
+          <div style="display:flex;justify-content:space-between;margin:3px 0"><span style="color:#198754">✅ Cubiertos</span><span style="font-weight:600;font-family:JetBrains Mono,monospace">${nVol} (${volHa.toFixed(1)} ha)</span></div>
+          <div style="display:flex;justify-content:space-between;margin:3px 0"><span style="color:#e67e22">🔶 Parciales</span><span style="font-weight:600;font-family:JetBrains Mono,monospace">${nPar}</span></div>
+          <div style="display:flex;justify-content:space-between;margin:3px 0"><span style="color:#dc3545">🔴 Pendientes</span><span style="font-weight:600;font-family:JetBrains Mono,monospace">${nPend}</span></div>
+          <div style="display:flex;justify-content:space-between;margin:3px 0;border-top:1px solid #eee;padding-top:4px"><span style="color:#666">📷 Fotos MRK</span><span style="font-weight:600;font-family:JetBrains Mono,monospace">${predioHits.toLocaleString()}</span></div>
+        </div>`;
     });
     
     poly.addTo(g);
@@ -822,7 +839,7 @@ function updateMap(){
   polyLayer=g;g.addTo(map);
   if(g.getLayers().length) map.fitBounds(g.getBounds(),{padding:[30,30]});
   // Click on map background to clear highlight
-  map.on('click',function(e){if(window._highlightLayer){map.removeLayer(window._highlightLayer);window._highlightLayer=null}});
+  map.on('click',function(e){if(window._highlightLayer){map.removeLayer(window._highlightLayer);window._highlightLayer=null}closeMapPanel()});
   const th=f.reduce((s,p)=>s+(p.SUP_HA||0),0);
   document.getElementById('mapPolyCount').textContent=f.length;
   document.getElementById('mapHaCount').textContent=fmt(th)+' ha';
