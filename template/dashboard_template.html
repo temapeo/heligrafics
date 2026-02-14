@@ -474,9 +474,40 @@ function pip(pt,poly){let ins=false;const[x,y]=pt;for(let i=0,j=poly.length-1;i<
 
 function recalculate() {
   const polys=getAllPolygons(), pts=getActiveMRKPoints();
+  const cfg=typeof P!=='undefined'?P:{fotosPerHa:55,umbralVolado:0.65};
   polys.forEach(p=>{p._mrkHits=0;p._mrkPoints=[]});
   pts.forEach(pt=>{pt.matchedPoly=null;for(const poly of polys){if(!poly.coords)continue;if(pip([pt.lat,pt.lng],poly.coords)){poly._mrkHits++;poly._mrkPoints.push(pt);pt.matchedPoly=poly.id;break}}});
-  polys.forEach(p=>{const h=p._mrkHits||0,exp=(p.SUP_HA||0)*80;if(h===0)p.ESTADO='PENDIENTE';else if(h>=exp*.7)p.ESTADO='VOLADO';else p.ESTADO='PARCIAL'});
+  
+  // Step 1: Individual polygon state
+  const fph=cfg.fotosPerHa||55, umb=cfg.umbralVolado||0.65;
+  polys.forEach(p=>{
+    const h=p._mrkHits||0, exp=(p.SUP_HA||0)*fph;
+    if(h===0) p._polyEstado='PENDIENTE';
+    else if(exp>0 && h>=exp*umb) p._polyEstado='VOLADO';
+    else p._polyEstado='PARCIAL';
+  });
+  
+  // Step 2: Propagate state by predio (NOM_PREDIO)
+  const predios={};
+  polys.forEach(p=>{
+    const key=p.NOM_PREDIO||p.ID_PREDIO||'';
+    if(key){if(!predios[key])predios[key]=[];predios[key].push(p)}
+  });
+  Object.values(predios).forEach(pols=>{
+    const estados=new Set(pols.map(p=>p._polyEstado));
+    const totalHits=pols.reduce((s,p)=>s+(p._mrkHits||0),0);
+    let predioEstado;
+    if(estados.size===1 && estados.has('VOLADO')) predioEstado='VOLADO';
+    else if(totalHits===0) predioEstado='PENDIENTE';
+    else predioEstado='PARCIAL';
+    pols.forEach(p=>{p.ESTADO=predioEstado});
+  });
+  // Polygons without predio: use individual state
+  polys.forEach(p=>{
+    const key=p.NOM_PREDIO||p.ID_PREDIO||'';
+    if(!key) p.ESTADO=p._polyEstado||'PENDIENTE';
+  });
+  
   refreshAll();
 }
 
@@ -822,15 +853,26 @@ function updateMap(){
     poly.addTo(g);
   });
   
-  // Add predio labels at zoom level
+  // Add predio labels - only visible at zoom >= 12
+  if(window._labelLayer){map.removeLayer(window._labelLayer)}
+  window._labelLayer=L.featureGroup();
+  const labeledPredios=new Set();
   f.forEach(p=>{
     if(!p.centroid||!p.NOM_PREDIO)return;
-    // Only show one label per predio
     const key=p.NOM_PREDIO;
-    if(p._file && predioIndex[key] && predioIndex[key][0]!==p) return;
+    if(labeledPredios.has(key)) return;
+    labeledPredios.add(key);
     const icon=L.divIcon({className:'predio-label',html:`<span>${key}</span>`,iconSize:[0,0]});
-    L.marker(p.centroid,{icon:icon,interactive:false}).addTo(g);
+    L.marker(p.centroid,{icon:icon,interactive:false}).addTo(window._labelLayer);
   });
+  // Show/hide labels based on zoom
+  function updateLabels(){
+    if(map.getZoom()>=12) window._labelLayer.addTo(map);
+    else map.removeLayer(window._labelLayer);
+  }
+  map.off('zoomend.labels');
+  map.on('zoomend.labels',updateLabels);
+  updateLabels();
   
   if(showMrk){
     const pts=getActiveMRKPoints();
@@ -996,7 +1038,8 @@ function dl(c,f,m){const b=new Blob([c],{type:m+';charset=utf-8;'});const a=docu
         mrkFiles.push({name:f.name, rawText:'(embedded)', points:f.points, active:f.active!==false, dateAdded:f.dateAdded||''});
       });
     }
-    recalculate();
+    // States already computed by Python - just refresh UI (don't recalculate)
+    refreshAll();
     showDashboard();
     // Show generation date
     if(EMBEDDED_DATA.generated) {
