@@ -253,8 +253,14 @@ def parse_mrk(filepath):
 
 
 # ============================================================
-# INTERSECCIÓN PUNTO-POLÍGONO
+# ANÁLISIS DE COBERTURA POR BUFFER DE LÍNEAS DE VUELO
 # ============================================================
+
+# Parámetros de cobertura
+ALTURA_VUELO = 60        # metros AGL
+BUFFER_M = 27            # buffer a cada lado de la línea (swath/2 del Mavic 3M a 60m)
+UMBRAL_COBERTURA = 0.55  # 55% del polígono cubierto = VOLADO
+
 def point_in_polygon(lat, lng, coords):
     """Ray casting algorithm."""
     inside = False
@@ -270,8 +276,29 @@ def point_in_polygon(lat, lng, coords):
     return inside
 
 
+def _latlon_to_meters(lat, lng, ref_lat, ref_lng):
+    """Convert lat/lng to approximate local meters."""
+    m_per_deg_lat = 111320.0
+    m_per_deg_lng = 111320.0 * math.cos(math.radians(ref_lat))
+    return ((lat - ref_lat) * m_per_deg_lat, (lng - ref_lng) * m_per_deg_lng)
+
+
 def process_intersections(polygons, mrk_points):
-    """Cruza foto-centros con polígonos y asigna estados."""
+    """Cruza líneas de vuelo MRK con polígonos usando buffer geométrico."""
+    from collections import defaultdict
+    
+    # Try to use Shapely for precise geometric analysis
+    try:
+        from shapely.geometry import Polygon as ShapelyPolygon, LineString, MultiLineString, Point
+        from shapely.ops import unary_union
+        USE_SHAPELY = True
+        print("   📐 Usando Shapely para análisis de cobertura por buffer...")
+    except ImportError:
+        USE_SHAPELY = False
+        print("   ⚠️  Shapely no disponible — usando método de conteo de puntos")
+        print("      Instala con: pip install shapely")
+    
+    # Count hits for display (always useful)
     for p in polygons:
         p['_mrkHits'] = 0
     
@@ -284,21 +311,121 @@ def process_intersections(polygons, mrk_points):
                 pt['matched'] = True
                 break
     
-    # Paso 1: Evaluar cada polígono individualmente
-    for p in polygons:
-        hits = p.get('_mrkHits', 0)
-        expected = p.get('SUP_HA', 0) * FOTOS_POR_HA
-        if hits == 0:
-            p['_polyEstado'] = 'PENDIENTE'
-        elif expected > 0 and hits >= expected * UMBRAL_VOLADO:
-            p['_polyEstado'] = 'VOLADO'
+    if USE_SHAPELY:
+        # Group MRK points by file to form flight lines
+        flight_lines_by_file = defaultdict(list)
+        for pt in mrk_points:
+            flight_lines_by_file[pt.get('file', '')].append((pt['lat'], pt['lng']))
+        
+        # Reference point for local coordinate conversion
+        all_lats = [pt['lat'] for pt in mrk_points]
+        all_lngs = [pt['lng'] for pt in mrk_points]
+        if not all_lats:
+            ref_lat, ref_lng = -36.5, -71.5
         else:
+            ref_lat = sum(all_lats) / len(all_lats)
+            ref_lng = sum(all_lngs) / len(all_lngs)
+        
+        m_per_deg_lat = 111320.0
+        m_per_deg_lng = 111320.0 * math.cos(math.radians(ref_lat))
+        
+        # Build flight lines in local meters and create buffered union
+        all_shapely_lines = []
+        for fname, pts in flight_lines_by_file.items():
+            if len(pts) < 2:
+                continue
+            local_pts = [((lat - ref_lat) * m_per_deg_lat, (lng - ref_lng) * m_per_deg_lng) for lat, lng in pts]
+            # Split into segments where gap > 100m (different flight lines within same file)
+            segments = []
+            current_seg = [local_pts[0]]
+            for i in range(1, len(local_pts)):
+                dx = local_pts[i][0] - local_pts[i-1][0]
+                dy = local_pts[i][1] - local_pts[i-1][1]
+                dist = math.sqrt(dx*dx + dy*dy)
+                if dist > 200:  # Gap > 200m = different flight line
+                    if len(current_seg) >= 2:
+                        segments.append(current_seg)
+                    current_seg = [local_pts[i]]
+                else:
+                    current_seg.append(local_pts[i])
+            if len(current_seg) >= 2:
+                segments.append(current_seg)
+            
+            for seg in segments:
+                try:
+                    line = LineString(seg)
+                    all_shapely_lines.append(line)
+                except:
+                    pass
+        
+        if all_shapely_lines:
+            # Create unified buffer of all flight lines
+            print(f"   📐 Buffer de {BUFFER_M}m sobre {len(all_shapely_lines)} segmentos de vuelo...")
+            try:
+                all_lines = unary_union(all_shapely_lines)
+                flight_coverage = all_lines.buffer(BUFFER_M)
+            except Exception as e:
+                print(f"   ⚠️  Error en unary_union: {e}")
+                flight_coverage = None
+            
+            if flight_coverage:
+                # Calculate coverage for each polygon
+                for p in polygons:
+                    if 'coords' not in p or len(p['coords']) < 3:
+                        p['_cobertura'] = 0.0
+                        continue
+                    
+                    try:
+                        local_coords = [((lat - ref_lat) * m_per_deg_lat, (lng - ref_lng) * m_per_deg_lng) 
+                                       for lat, lng in p['coords']]
+                        poly_shape = ShapelyPolygon(local_coords)
+                        
+                        if not poly_shape.is_valid:
+                            poly_shape = poly_shape.buffer(0)
+                        
+                        if poly_shape.area < 1:
+                            p['_cobertura'] = 0.0
+                            continue
+                        
+                        intersection = poly_shape.intersection(flight_coverage)
+                        coverage = intersection.area / poly_shape.area
+                        p['_cobertura'] = round(min(coverage, 1.0), 3)
+                    except Exception as e:
+                        # Fallback to point count
+                        hits = p.get('_mrkHits', 0)
+                        expected = max(p.get('SUP_HA', 0) * FOTOS_POR_HA, 1)
+                        p['_cobertura'] = round(min(hits / expected, 1.0), 3)
+                
+                print(f"   ✅ Cobertura calculada para {len(polygons)} polígonos (umbral: {UMBRAL_COBERTURA*100:.0f}%)")
+            else:
+                # Fallback
+                for p in polygons:
+                    hits = p.get('_mrkHits', 0)
+                    expected = max(p.get('SUP_HA', 0) * FOTOS_POR_HA, 1)
+                    p['_cobertura'] = round(min(hits / expected, 1.0), 3)
+        else:
+            for p in polygons:
+                p['_cobertura'] = 0.0
+    else:
+        # Fallback without Shapely: use point count method
+        for p in polygons:
+            hits = p.get('_mrkHits', 0)
+            expected = max(p.get('SUP_HA', 0) * FOTOS_POR_HA, 1)
+            p['_cobertura'] = round(min(hits / expected, 1.0), 3)
+    
+    # Paso 1: Evaluar cada polígono por cobertura
+    for p in polygons:
+        cov = p.get('_cobertura', 0)
+        if cov == 0 and p.get('_mrkHits', 0) == 0:
+            p['_polyEstado'] = 'PENDIENTE'
+        elif cov >= UMBRAL_COBERTURA:
+            p['_polyEstado'] = 'VOLADO'
+        elif cov > 0 or p.get('_mrkHits', 0) > 0:
             p['_polyEstado'] = 'PARCIAL'
+        else:
+            p['_polyEstado'] = 'PENDIENTE'
     
     # Paso 2: Propagar estado a nivel de predio (NOM_PREDIO)
-    # Si un predio tiene al menos un polígono PENDIENTE/PARCIAL,
-    # todo el predio baja a PARCIAL (si tiene algún hit) o PENDIENTE (si no tiene ninguno)
-    from collections import defaultdict
     predios = defaultdict(list)
     for p in polygons:
         key = p.get('NOM_PREDIO', p.get('ID_PREDIO', ''))
@@ -308,15 +435,13 @@ def process_intersections(polygons, mrk_points):
     for predio, polys in predios.items():
         estados = set(p['_polyEstado'] for p in polys)
         total_hits = sum(p.get('_mrkHits', 0) for p in polys)
+        total_cov = sum(p.get('_cobertura', 0) for p in polys)
         
         if estados == {'VOLADO'}:
-            # Todos volados → predio VOLADO
             predio_estado = 'VOLADO'
-        elif total_hits == 0:
-            # Ningún hit → predio PENDIENTE
+        elif total_hits == 0 and total_cov == 0:
             predio_estado = 'PENDIENTE'
         else:
-            # Mezcla de estados → predio PARCIAL
             predio_estado = 'PARCIAL'
         
         for p in polys:
