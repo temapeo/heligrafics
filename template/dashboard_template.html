@@ -56,8 +56,9 @@ header{background:linear-gradient(135deg,#fff 0%,#f0f4fa 100%);border-bottom:1px
 .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px}
 .grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:20px}
 .grid-5{display:grid;grid-template-columns:repeat(5,1fr);gap:16px;margin-bottom:20px}
-@media(max-width:900px){.grid-5{grid-template-columns:repeat(3,1fr)}}
-@media(max-width:600px){.grid-5{grid-template-columns:1fr 1fr}}
+.grid-6{display:grid;grid-template-columns:repeat(6,1fr);gap:16px;margin-bottom:20px}
+@media(max-width:900px){.grid-5{grid-template-columns:repeat(3,1fr)}.grid-6{grid-template-columns:repeat(3,1fr)}}
+@media(max-width:600px){.grid-5{grid-template-columns:1fr 1fr}.grid-6{grid-template-columns:1fr 1fr}}
 
 /* CARD */
 .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:18px;box-shadow:var(--shadow)}
@@ -251,10 +252,11 @@ tr:hover td{background:var(--surface2)}
     <!-- OVERVIEW -->
     <div id="tab-overview">
       <div class="section-title">Métricas generales</div>
-      <div class="grid-5">
+      <div class="grid-6">
         <div class="metric-card blue"><div class="metric-label">Superficie Total</div><div class="metric-value" id="mTotalHa">—</div><div class="metric-sub" id="mTotalPoly">—</div></div>
-        <div class="metric-card green"><div class="metric-label">Volada (completa)</div><div class="metric-value" id="mVoladoHa">0 ha</div><div class="metric-sub" id="mVoladoPoly">0 predios</div></div>
-        <div class="metric-card orange"><div class="metric-label">Parcial (en curso)</div><div class="metric-value" id="mParcialHa">0 ha</div><div class="metric-sub" id="mParcialPoly">0 predios</div></div>
+        <div class="metric-card green" style="border-color:#198754"><div class="metric-label">Superficie Volada</div><div class="metric-value" id="mCubiertaHa">0 ha</div><div class="metric-sub" id="mCubiertaSub">—</div></div>
+        <div class="metric-card green"><div class="metric-label">Predios Completos</div><div class="metric-value" id="mVoladoHa">0 ha</div><div class="metric-sub" id="mVoladoPoly">0 predios</div></div>
+        <div class="metric-card orange"><div class="metric-label">Predios Parciales</div><div class="metric-value" id="mParcialHa">0 ha</div><div class="metric-sub" id="mParcialPoly">0 predios</div></div>
         <div class="metric-card yellow"><div class="metric-label">Pendiente</div><div class="metric-value" id="mPendienteHa">—</div><div class="metric-sub" id="mPendienteDias">—</div></div>
         <div class="metric-card purple"><div class="metric-label">Avance</div><div class="metric-value" id="mAvancePct">0%</div><div class="metric-sub" id="mAvanceSub">Inicio: 15-Feb-2026</div></div>
       </div>
@@ -721,20 +723,19 @@ function updateMetrics() {
   const polys=getAllPolygons();
   const totalHa=polys.reduce((s,p)=>s+(p.SUP_HA||0),0);
   
-  // Volado completo (predios 100% cerrados)
+  // Superficie volada REAL: polígonos individuales con cobertura
+  const cubiertaHa=polys.filter(p=>p._polyEstado==='VOLADO'||p._polyEstado==='PARCIAL')
+    .reduce((s,p)=>s+(p.SUP_HA||0),0);
+  
+  // Predios completos (100% volados): sum only their polygons' ha
   const volP=polys.filter(p=>p.ESTADO==='VOLADO');
   const volHa=volP.reduce((s,p)=>s+(p.SUP_HA||0),0);
   const volPredios=new Set(volP.map(p=>p.NOM_PREDIO||p.ID_PREDIO).filter(Boolean)).size;
   
-  // Parcial (predios con cobertura pero incompletos)
-  const parP=polys.filter(p=>p.ESTADO==='PARCIAL');
-  const parHa=parP.reduce((s,p)=>s+(p.SUP_HA||0),0);
-  const parPredios=new Set(parP.map(p=>p.NOM_PREDIO||p.ID_PREDIO).filter(Boolean)).size;
-  
-  // Superficie cubierta REAL: solo polígonos individuales con cobertura
-  // No incluir polígonos pendientes dentro de predios parciales
-  const cubiertaHa=polys.filter(p=>p._polyEstado==='VOLADO'||p._polyEstado==='PARCIAL')
-    .reduce((s,p)=>s+(p.SUP_HA||0),0);
+  // Predios parciales: only the COVERED polygons within partial predios
+  // cubiertaHa - volHa = ha of covered polys in partial predios
+  const parcialCubiertaHa = cubiertaHa - volHa;
+  const parPredios=new Set(polys.filter(p=>p.ESTADO==='PARCIAL').map(p=>p.NOM_PREDIO||p.ID_PREDIO).filter(Boolean)).size;
   
   const pendHa=totalHa-cubiertaHa;
   const pct=totalHa>0?(cubiertaHa/totalHa*100):0;
@@ -742,9 +743,11 @@ function updateMetrics() {
   
   document.getElementById('mTotalHa').textContent=fmt(totalHa)+' ha';
   document.getElementById('mTotalPoly').textContent=polys.length+' polígonos';
+  document.getElementById('mCubiertaHa').textContent=fmt(cubiertaHa)+' ha';
+  document.getElementById('mCubiertaSub').textContent=`${polys.filter(p=>p._polyEstado==='VOLADO'||p._polyEstado==='PARCIAL').length} polígonos`;
   document.getElementById('mVoladoHa').textContent=fmt(volHa)+' ha';
   document.getElementById('mVoladoPoly').textContent=volPredios+' predios';
-  document.getElementById('mParcialHa').textContent=fmt(parHa)+' ha';
+  document.getElementById('mParcialHa').textContent=fmt(parcialCubiertaHa)+' ha';
   document.getElementById('mParcialPoly').textContent=parPredios+' predios';
   document.getElementById('mPendienteHa').textContent=fmt(pendHa)+' ha';
   document.getElementById('mPendienteDias').textContent=`~${dias} días hábiles`;
