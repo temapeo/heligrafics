@@ -279,6 +279,8 @@ tr:hover td{background:var(--surface2)}
         <select class="filter-select" id="mapFilterEstado" onchange="updateMap()"><option value="">Todos</option><option value="PENDIENTE">Pendiente</option><option value="VOLADO">Volado</option><option value="PARCIAL">Parcial</option></select>
         <select class="filter-select" id="mapColorBy" onchange="updateMap()"><option value="estado">Color por Estado</option><option value="zona">Color por Zona</option><option value="tipouso">Color por Tipo Uso</option></select>
         <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text-dim);cursor:pointer"><input type="checkbox" id="showMRK" onchange="updateMap()" style="accent-color:var(--accent)"> Líneas MRK</label>
+        <select class="filter-select" id="mapFilterEquipo" onchange="updateMap()"><option value="">Todos los equipos</option></select>
+        <select class="filter-select" id="mapFilterFecha" onchange="updateMap()"><option value="">Todas las fechas</option></select>
       </div>
       <div id="mapContainer" style="position:relative"><div id="map"></div></div>
       <div class="grid-3" style="margin-top:14px">
@@ -679,6 +681,39 @@ function populateFilters() {
   const tus=[...new Set(polys.map(p=>p.TIPOUSO).filter(Boolean))];
   ['filterZona','mapFilterZona'].forEach(id=>{const s=document.getElementById(id);const v=s.value;s.innerHTML='<option value="">Todas las zonas</option>';zonas.forEach(z=>s.innerHTML+=`<option value="${z}">${z}</option>`);s.value=v});
   const ts=document.getElementById('filterTipoUso');const tv=ts.value;ts.innerHTML='<option value="">Todos los usos</option>';tus.forEach(t=>ts.innerHTML+=`<option value="${t}">${t}</option>`);ts.value=tv;
+  
+  // Populate equipo filter
+  const eqSel=document.getElementById('mapFilterEquipo');
+  if(eqSel){
+    const ops=new Set();
+    mrkFiles.forEach(f=>{
+      const op=f.operator||'';
+      if(op) ops.add(op);
+      else if(f.points&&f.points.length){
+        const po=f.points[0].operator||f.points[0].op||'';
+        if(po) ops.add(po);
+      }
+    });
+    const cv=eqSel.value;
+    eqSel.innerHTML='<option value="">Todos los equipos</option>';
+    [...ops].sort().forEach(op=>eqSel.innerHTML+=`<option value="${op}">${op}</option>`);
+    eqSel.value=cv;
+  }
+  
+  // Populate fecha filter from MRK folder names
+  const fSel=document.getElementById('mapFilterFecha');
+  if(fSel){
+    const dates=new Set();
+    mrkFiles.forEach(f=>{
+      const m=f.name.match(/(\d{2})[-_]?(\d{2})[-_]?(\d{4})/);
+      if(m) dates.add(`${m[1]}/${m[2]}/${m[3]}`);
+      else{const m2=f.name.match(/(\d{4})(\d{2})(\d{2})/);if(m2)dates.add(`${m2[3]}/${m2[2]}/${m2[1]}`);}
+    });
+    const cv=fSel.value;
+    fSel.innerHTML='<option value="">Todas las fechas</option>';
+    [...dates].sort().forEach(d=>fSel.innerHTML+=`<option value="${d}">${d}</option>`);
+    fSel.value=cv;
+  }
 }
 
 // ========== METRICS ==========
@@ -878,8 +913,38 @@ function updateMap(){
   updateLabels();
   
   if(showMrk){
-    const pts=getActiveMRKPoints();
-    if(pts.length){mrkLayer=L.featureGroup();const bf={};pts.forEach(p=>{if(!bf[p.file])bf[p.file]=[];bf[p.file].push([p.lat,p.lng])});Object.values(bf).forEach(ps=>{L.polyline(ps,{color:'#d98e0a',weight:2,opacity:.7,dashArray:'4,4'}).addTo(mrkLayer)});pts.forEach(p=>{L.circleMarker([p.lat,p.lng],{radius:1.5,color:'#d98e0a',fillColor:'#d98e0a',fillOpacity:.9,weight:0}).addTo(mrkLayer)});mrkLayer.addTo(map)}
+    const eqFilter=document.getElementById('mapFilterEquipo')?.value||'';
+    const dtFilter=document.getElementById('mapFilterFecha')?.value||'';
+    const eqColors={'M3E':'#2196F3','M3M':'#FF9800'};
+    let pts=getActiveMRKPoints();
+    // Filter by equipo
+    if(eqFilter) pts=pts.filter(p=>(p.operator||p.op||'')==eqFilter);
+    // Filter by date (from file name in MRK folder)
+    if(dtFilter){
+      const activeDates=new Set();
+      mrkFiles.forEach(f=>{
+        const m=f.name.match(/(\d{2})[-_]?(\d{2})[-_]?(\d{4})/);
+        let d='';if(m) d=`${m[1]}/${m[2]}/${m[3]}`;
+        else{const m2=f.name.match(/(\d{4})(\d{2})(\d{2})/);if(m2) d=`${m2[3]}/${m2[2]}/${m2[1]}`;}
+        if(d===dtFilter&&f.points) f.points.forEach(p=>activeDates.add(p.file));
+      });
+      pts=pts.filter(p=>activeDates.has(p.file));
+    }
+    if(pts.length){
+      mrkLayer=L.featureGroup();
+      const bf={};
+      pts.forEach(p=>{
+        const op=p.operator||p.op||'';
+        const key=p.file+'_'+op;
+        if(!bf[key])bf[key]={pts:[],op:op};
+        bf[key].pts.push([p.lat,p.lng]);
+      });
+      Object.values(bf).forEach(d=>{
+        const col=eqColors[d.op]||'#d98e0a';
+        L.polyline(d.pts,{color:col,weight:2.5,opacity:.8}).addTo(mrkLayer);
+      });
+      mrkLayer.addTo(map);
+    }
   }
   polyLayer=g;g.addTo(map);
   if(g.getLayers().length) map.fitBounds(g.getBounds(),{padding:[30,30]});
@@ -1173,14 +1238,18 @@ function dl(c,f,m){const b=new Blob([c],{type:m+';charset=utf-8;'});const a=docu
     });
     if(EMBEDDED_DATA.mrkFiles) {
       EMBEDDED_DATA.mrkFiles.forEach(f => {
-        // Pass operator to each point
-        if(f.operator && f.points) {
-          f.points.forEach(p => { if(!p.operator) p.operator = f.operator; });
+        // Restore operator and matched flag from Python
+        if(f.points) {
+          f.points.forEach(p => { 
+            if(!p.operator && f.operator) p.operator = f.operator;
+            if(!p.operator && p.op) p.operator = p.op;
+            if(p.m) p.matchedPoly = true; // Pre-computed by Python
+          });
         }
         mrkFiles.push({name:f.name, rawText:'(embedded)', points:f.points, active:f.active!==false, operator:f.operator||'', dateAdded:f.dateAdded||''});
       });
     }
-    // States already computed by Python - just refresh UI (don't recalculate)
+    // States already computed by Python - just refresh UI
     refreshAll();
     showDashboard();
     // Show generation date

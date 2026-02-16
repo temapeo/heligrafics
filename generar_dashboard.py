@@ -446,6 +446,10 @@ def process_intersections(polygons, mrk_points):
             p['_polyEstado'] = 'PENDIENTE'
     
     # --- Propagar estado a nivel de predio ---
+    # Regla: si ≥80% de la superficie del predio está volada → VOLADO
+    # Esto evita que polígonos chicos pendientes (cortafuegos, bordes) bajen todo el predio
+    UMBRAL_PREDIO = 0.80  # 80% superficie volada = predio VOLADO
+    
     predios = defaultdict(list)
     for p in polygons:
         key = p.get('NOM_PREDIO', p.get('ID_PREDIO', ''))
@@ -453,15 +457,22 @@ def process_intersections(polygons, mrk_points):
             predios[key].append(p)
     
     for predio, polys in predios.items():
-        estados = set(p['_polyEstado'] for p in polys)
+        total_ha = sum(p.get('SUP_HA', 0) for p in polys)
+        volado_ha = sum(p.get('SUP_HA', 0) for p in polys if p['_polyEstado'] == 'VOLADO')
+        parcial_ha = sum(p.get('SUP_HA', 0) for p in polys if p['_polyEstado'] == 'PARCIAL')
         total_hits = sum(p.get('_mrkHits', 0) for p in polys)
         
-        if estados == {'VOLADO'}:
+        pct_volado = volado_ha / total_ha if total_ha > 0 else 0
+        
+        if pct_volado >= UMBRAL_PREDIO:
+            # ≥80% de superficie volada → predio VOLADO
             predio_estado = 'VOLADO'
         elif total_hits == 0 and all(p.get('_cobertura', 0) == 0 for p in polys):
             predio_estado = 'PENDIENTE'
-        else:
+        elif volado_ha + parcial_ha > 0:
             predio_estado = 'PARCIAL'
+        else:
+            predio_estado = 'PENDIENTE'
         
         for p in polys:
             p['ESTADO'] = predio_estado
@@ -509,17 +520,17 @@ def generate_dashboard(kml_data, mrk_data, operators, logo_b64):
             'polygons': polys
         })
     
-    # Embeber MRK de forma compacta: solo lat,lng como arrays
+    # Embeber MRK: incluir flag 'matched' pre-calculado por Python
     for name, pts in mrk_data.items():
-        # Detect operator from point data
         op = pts[0].get('operator', '') if pts else ''
         compact_pts = []
         for pt in pts:
-            compact_pts.append({
-                'lat': pt['lat'],
-                'lng': pt['lng'],
-                'file': pt['file']
-            })
+            p = {'lat': pt['lat'], 'lng': pt['lng'], 'file': pt['file']}
+            if pt.get('matched'):
+                p['m'] = 1  # flag compacto: matched
+            if pt.get('operator'):
+                p['op'] = pt['operator']
+            compact_pts.append(p)
         dashboard_data['mrkFiles'].append({
             'name': name,
             'points': compact_pts,
@@ -527,6 +538,24 @@ def generate_dashboard(kml_data, mrk_data, operators, logo_b64):
             'operator': op,
             'dateAdded': datetime.now().strftime('%d/%m/%Y %H:%M')
         })
+    
+    # Pre-compute operator stats for Equipos tab
+    op_stats = defaultdict(lambda: {'pts': 0, 'matched': 0, 'files': set()})
+    for name, pts in mrk_data.items():
+        for pt in pts:
+            op = pt.get('operator', '?')
+            op_stats[op]['pts'] += 1
+            if pt.get('matched'):
+                op_stats[op]['matched'] += 1
+            op_stats[op]['files'].add(pt.get('file', ''))
+    
+    dashboard_data['opStats'] = {}
+    for op, d in op_stats.items():
+        dashboard_data['opStats'][op] = {
+            'pts': d['pts'],
+            'matched': d['matched'],
+            'files': len(d['files'])
+        }
     
     data_json = json.dumps(dashboard_data, ensure_ascii=False)
     data_size_mb = len(data_json.encode('utf-8')) / (1024 * 1024)
@@ -714,25 +743,34 @@ def main():
             print(f"   📐 Cobertura promedio (polígonos con datos): {avg_cov*100:.1f}%")
             print(f"   📊 Superficie cubierta: {cubierta_ha:,.1f} / {total_ha:,.1f} ha ({cubierta_ha/total_ha*100:.1f}%)")
             
-            # Diagnóstico: por qué predios son PARCIALES
+            # Diagnóstico: predios PARCIALES (qué les falta)
             parcial_predios = {}
             for p in all_polygons:
                 if p.get('ESTADO') == 'PARCIAL':
                     key = p.get('NOM_PREDIO', p.get('ID_PREDIO', ''))
                     if key not in parcial_predios:
-                        parcial_predios[key] = {'total':0, 'volado':0, 'parcial':0, 'pendiente':0, 'ha':0}
+                        parcial_predios[key] = {'total':0, 'volado':0, 'parcial':0, 'pendiente':0, 
+                                                'ha':0, 'ha_volado':0, 'ha_parcial':0}
                     parcial_predios[key]['total'] += 1
-                    parcial_predios[key]['ha'] += p.get('SUP_HA', 0)
+                    ha = p.get('SUP_HA', 0)
+                    parcial_predios[key]['ha'] += ha
                     pe = p.get('_polyEstado', 'PENDIENTE')
-                    if pe == 'VOLADO': parcial_predios[key]['volado'] += 1
-                    elif pe == 'PARCIAL': parcial_predios[key]['parcial'] += 1
-                    else: parcial_predios[key]['pendiente'] += 1
+                    if pe == 'VOLADO': 
+                        parcial_predios[key]['volado'] += 1
+                        parcial_predios[key]['ha_volado'] += ha
+                    elif pe == 'PARCIAL': 
+                        parcial_predios[key]['parcial'] += 1
+                        parcial_predios[key]['ha_parcial'] += ha
+                    else: 
+                        parcial_predios[key]['pendiente'] += 1
             
             if parcial_predios:
                 print(f"\n   🔎 DIAGNÓSTICO PREDIOS PARCIALES:")
                 for name, d in sorted(parcial_predios.items(), key=lambda x: -x[1]['ha'])[:10]:
+                    pct = (d['ha_volado']/d['ha']*100) if d['ha'] > 0 else 0
                     print(f"      {name}: {d['total']} pol ({d['ha']:.1f} ha) → "
-                          f"✅{d['volado']} 🔶{d['parcial']} 🔴{d['pendiente']}")
+                          f"✅{d['volado']} 🔶{d['parcial']} 🔴{d['pendiente']} "
+                          f"[{pct:.0f}% sup volada]")
             
             # Stats por operador
             op_stats = defaultdict(lambda: {'pts':0, 'matched':0})
