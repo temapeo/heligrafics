@@ -553,7 +553,10 @@ def generate_dashboard(kml_data, mrk_data, all_polygons, operators, logo_b64):
     # Key principle: each polygon's ha is counted ONCE in the daily total,
     # assigned to the EARLIEST date it was touched (incremental coverage)
     
-    op_total_ha = defaultdict(float)  # op -> ha (polygons touched, may overlap)
+    op_total_ha = defaultdict(float)  # op -> ha (polygons touched)
+    op_poly_count = defaultdict(int)   # op -> number of polygons touched
+    op_date_ha = defaultdict(lambda: defaultdict(float))  # op -> date -> ha
+    op_date_polys = defaultdict(lambda: defaultdict(int))  # op -> date -> polygon count
     
     # For daily table: incremental — assign polygon to the date that 
     # contributed the MOST points (primary coverage), not just first touch
@@ -571,6 +574,15 @@ def generate_dashboard(kml_data, mrk_data, all_polygons, operators, logo_b64):
         for op, hits in op_hits.items():
             if hits > 0:
                 op_total_ha[op] += ha
+                op_poly_count[op] += 1
+        
+        # Per op+date: which operator+date combos touched this polygon
+        op_date_hits = p.get('_opDateHits', {})
+        for op, date_dict in op_date_hits.items():
+            for date, hits in date_dict.items():
+                if hits > 0:
+                    op_date_ha[op][date] += ha
+                    op_date_polys[op][date] += 1
         
         # Assign to date with MOST hits (the day that actually covered it)
         date_hits = p.get('_dateHits', {})
@@ -591,11 +603,19 @@ def generate_dashboard(kml_data, mrk_data, all_polygons, operators, logo_b64):
     dashboard_data['opStats'] = {}
     for op in set(list(op_pts.keys()) + list(op_total_ha.keys())):
         d = op_pts[op]
+        daily = {}
+        for date in op_date_ha.get(op, {}):
+            daily[date] = {
+                'ha': round(op_date_ha[op][date], 1),
+                'polys': op_date_polys[op].get(date, 0)
+            }
         dashboard_data['opStats'][op] = {
             'pts': d['pts'],
             'matched': d['matched'],
             'files': len(d['files']),
-            'ha': round(op_total_ha.get(op, 0), 1)
+            'ha': round(op_total_ha.get(op, 0), 1),
+            'polys': op_poly_count.get(op, 0),
+            'daily': daily
         }
     
     # dateStats: incremental (sums to total cubierta)

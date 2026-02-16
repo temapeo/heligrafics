@@ -1108,15 +1108,17 @@ function renderEquipos(){
   h+=`<div class="grid-3" style="margin-bottom:20px">`;
   ops.forEach(op=>{
     const d=opTotals[op];
-    const eff=d.pts>0?(d.matched/d.pts*100).toFixed(0):'0';
+    const eStats=embeddedOpStats[op]||{};
+    const opHa=eStats.ha||0;
+    const opPolys=eStats.polys||0;
     const nDays=dates.filter(dt=>dailyData[dt]?.[op]).length;
     const icon=op.includes('M3E')?'🟦':op.includes('M3M')?'🟧':'👤';
     h+=`<div class="card">
       <div class="card-header"><h3>${icon} ${op}</h3></div>
       <div class="grid-2" style="margin-bottom:0">
-        <div><div class="zone-stat-label">Foto-centros</div><div class="zone-stat-value">${d.pts.toLocaleString()}</div></div>
-        <div><div class="zone-stat-label">En polígonos</div><div class="zone-stat-value" style="color:var(--success)">${d.matched.toLocaleString()}</div></div>
-        <div><div class="zone-stat-label">Eficiencia</div><div class="zone-stat-value">${eff}%</div></div>
+        <div><div class="zone-stat-label">Superficie</div><div class="zone-stat-value" style="color:var(--success)">${opHa.toFixed(1)} ha</div></div>
+        <div><div class="zone-stat-label">Polígonos</div><div class="zone-stat-value">${opPolys}</div></div>
+        <div><div class="zone-stat-label">Ha/día prom.</div><div class="zone-stat-value">${nDays>0?(opHa/nDays).toFixed(1):'—'}</div></div>
         <div><div class="zone-stat-label">Días volados</div><div class="zone-stat-value">${nDays}</div></div>
       </div>
     </div>`;
@@ -1129,7 +1131,7 @@ function renderEquipos(){
   </div>`;
   h+='</div>';
   
-  // Combined daily table - fotos per operator, incremental ha total (sums to cubierta)
+  // Daily table - surface per operator per day + daily total
   const dateStats = (typeof EMBEDDED_DATA !== 'undefined' && EMBEDDED_DATA.dateStats) ? EMBEDDED_DATA.dateStats : {};
   
   h+=`<div class="card" style="margin-bottom:16px">
@@ -1137,9 +1139,9 @@ function renderEquipos(){
     <div class="table-wrap"><table>
       <thead><tr><th>Fecha</th>`;
   ops.forEach(op=>{
-    h+=`<th style="text-align:center;border-left:2px solid var(--border)">${op}<br><span style="font-size:10px;font-weight:400">fotos</span></th>`;
+    h+=`<th style="text-align:center;border-left:2px solid var(--border)">${op}<br><span style="font-size:10px;font-weight:400">ha</span></th>`;
   });
-  h+=`<th style="border-left:2px solid var(--border)">Sup. nueva</th><th>Acumulado</th></tr></thead><tbody>`;
+  h+=`<th style="border-left:2px solid var(--border)">Sup. diaria</th><th>Acumulado</th></tr></thead><tbody>`;
   
   let acum=0;
   dates.forEach(date=>{
@@ -1147,9 +1149,10 @@ function renderEquipos(){
     acum+=dayHa;
     h+=`<tr><td style="font-weight:600">${date}</td>`;
     ops.forEach(op=>{
-      const d=dailyData[date]?.[op];
-      if(d){
-        h+=`<td class="mono" style="border-left:2px solid var(--border);text-align:center">${d.pts.toLocaleString()}</td>`;
+      const opDaily=embeddedOpStats[op]?.daily||{};
+      const dInfo=opDaily[date];
+      if(dInfo && dInfo.ha>0){
+        h+=`<td class="mono" style="border-left:2px solid var(--border);text-align:center;color:var(--success);font-weight:600">${dInfo.ha.toFixed(1)}</td>`;
       } else {
         h+=`<td class="mono" style="border-left:2px solid var(--border);color:var(--text-muted);text-align:center">—</td>`;
       }
@@ -1161,8 +1164,8 @@ function renderEquipos(){
   // Totals row
   h+=`<tr style="font-weight:700;border-top:3px solid var(--accent)"><td>TOTAL</td>`;
   ops.forEach(op=>{
-    const d=opTotals[op];
-    h+=`<td class="mono" style="border-left:2px solid var(--border);text-align:center">${d.pts.toLocaleString()}</td>`;
+    const opHa=embeddedOpStats[op]?.ha||0;
+    h+=`<td class="mono" style="border-left:2px solid var(--border);text-align:center;color:var(--success)">${opHa.toFixed(1)}</td>`;
   });
   h+=`<td class="mono" style="border-left:2px solid var(--border);color:var(--success)">${acum.toFixed(1)} ha</td>`;
   h+=`<td class="mono" style="color:var(--accent);font-size:16px">${totalCubierta.toFixed(1)} ha</td></tr>`;
@@ -1171,7 +1174,7 @@ function renderEquipos(){
   // Meta
   const rendTarget=P.rendHaDia||100;
   h+=`<div style="font-size:11px;color:var(--text-muted);text-align:center;margin-top:10px">
-    Sup. nueva = polígonos cubiertos por primera vez ese día · Acumulado = total progresivo · Rendimiento objetivo: ${rendTarget} ha/día/equipo
+    Sup. por equipo = polígonos tocados (pueden compartirse) · Sup. diaria = superficie nueva cubierta ese día · Acumulado = total progresivo
   </div>`;
   
   c.innerHTML=h;
