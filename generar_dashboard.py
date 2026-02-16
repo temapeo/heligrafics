@@ -480,6 +480,12 @@ def process_intersections(polygons, mrk_points):
         if 'ESTADO' not in p or not p.get('NOM_PREDIO', p.get('ID_PREDIO', '')):
             p['ESTADO'] = p.get('_polyEstado', 'PENDIENTE')
     
+    # Add simple _ops list for map coloring (which operators touched each polygon)
+    for p in polygons:
+        ops = [op for op, hits in p.get('_opHits', {}).items() if hits > 0]
+        if ops:
+            p['_ops'] = sorted(ops)
+    
     total_time = time.time() - t0
     print(f"   ⏱️  Tiempo total de intersección: {total_time:.1f}s")
 
@@ -513,9 +519,15 @@ def generate_dashboard(kml_data, mrk_data, all_polygons, operators, logo_b64):
     }
     
     for name, polys in kml_data.items():
+        # Clean heavy internal fields before embedding
+        clean_polys = []
+        for p in polys:
+            cp = {k: v for k, v in p.items() 
+                  if not k.startswith('_') or k in ('_mrkHits', '_cobertura', '_polyEstado', '_ops', '_supSource')}
+            clean_polys.append(cp)
         dashboard_data['kmlFiles'].append({
             'name': name,
-            'polygons': polys
+            'polygons': clean_polys
         })
     
     # Embeber MRK: incluir flag 'matched' pre-calculado por Python

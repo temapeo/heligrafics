@@ -277,7 +277,7 @@ tr:hover td{background:var(--surface2)}
       <div class="filters">
         <select class="filter-select" id="mapFilterZona" onchange="updateMap()"><option value="">Todas las zonas</option></select>
         <select class="filter-select" id="mapFilterEstado" onchange="updateMap()"><option value="">Todos</option><option value="PENDIENTE">Pendiente</option><option value="VOLADO">Volado</option><option value="PARCIAL">Parcial</option></select>
-        <select class="filter-select" id="mapColorBy" onchange="updateMap()"><option value="estado">Color por Estado</option><option value="zona">Color por Zona</option><option value="tipouso">Color por Tipo Uso</option></select>
+        <select class="filter-select" id="mapColorBy" onchange="updateMap()"><option value="estado">Color por Estado</option><option value="equipo">Color por Equipo</option><option value="zona">Color por Zona</option><option value="tipouso">Color por Tipo Uso</option></select>
         <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text-dim);cursor:pointer"><input type="checkbox" id="showMRK" onchange="updateMap()" style="accent-color:var(--accent)"> Líneas MRK</label>
         <select class="filter-select" id="mapFilterEquipo" onchange="updateMap()"><option value="">Todos los equipos</option></select>
         <select class="filter-select" id="mapFilterFecha" onchange="updateMap()"><option value="">Todas las fechas</option></select>
@@ -823,10 +823,20 @@ function updateMap(){
   if(polyLayer){map.removeLayer(polyLayer);polyLayer=null}
   if(mrkLayer){map.removeLayer(mrkLayer);mrkLayer=null}
   if(window._highlightLayer){map.removeLayer(window._highlightLayer);window._highlightLayer=null}
-  const cols={estado:{'PENDIENTE':'#dc3545','VOLADO':'#198754','PARCIAL':'#e67e22','REVISION':'#1b6ec2'},zona:{'Chillán':'#1b6ec2','Valdivia':'#7c3aed'},tipouso:{}};
+  const cols={estado:{'PENDIENTE':'#dc3545','VOLADO':'#198754','PARCIAL':'#e67e22','REVISION':'#1b6ec2'},zona:{'Chillán':'#1b6ec2','Valdivia':'#7c3aed'},tipouso:{},equipo:{'Solo M3E':'#2196F3','Solo M3M':'#FF9800','Ambos equipos':'#4CAF50','Sin datos':'#ccc'}};
   const tus=[...new Set(f.map(p=>p.TIPOUSO).filter(Boolean))];
   const tc=['#1b6ec2','#198754','#d98e0a','#7c3aed','#0d9488','#dc3545','#c2185b','#e65100'];
   tus.forEach((t,i)=>{cols.tipouso[t]=tc[i%tc.length]});
+  
+  // Helper: get equipo color for a polygon
+  function getEquipoColor(p){
+    const ops=p._ops||[];
+    if(ops.length===0) return '#ccc';
+    if(ops.length>=2) return '#4CAF50';
+    if(ops[0]==='M3E') return '#2196F3';
+    if(ops[0]==='M3M') return '#FF9800';
+    return '#ccc';
+  }
   
   // Index polygons by predio for click highlight
   const predioIndex={};
@@ -836,7 +846,7 @@ function updateMap(){
   f.forEach(p=>{
     if(!p.coords||p.coords.length<3)return;
     // Color always uses ESTADO (predio-level), not _polyEstado
-    let c;if(colorBy==='estado')c=cols.estado[p.ESTADO]||'#7a889e';else if(colorBy==='zona')c=cols.zona[p.ZONA]||'#7a889e';else c=cols.tipouso[p.TIPOUSO]||'#7a889e';
+    let c;if(colorBy==='estado')c=cols.estado[p.ESTADO]||'#7a889e';else if(colorBy==='zona')c=cols.zona[p.ZONA]||'#7a889e';else if(colorBy==='equipo')c=getEquipoColor(p);else c=cols.tipouso[p.TIPOUSO]||'#7a889e';
     const poly=L.polygon(p.coords,{color:c,fillColor:c,fillOpacity:.3,weight:1.8,opacity:.9});
     
     const predioKey=p.NOM_PREDIO||p.ID_PREDIO||'';
@@ -1089,14 +1099,16 @@ function renderEquipos(){
   
   let h='';
   
-  // Summary cards per operator
-  const gridCols=Math.min(ops.length, 3);
-  h+=`<div class="grid-${gridCols}" style="margin-bottom:20px">`;
+  // Total cubierta from Resumen
+  const totalCubierta = getAllPolygons().filter(p=>p.ESTADO==='VOLADO'||p.ESTADO==='PARCIAL').reduce((s,p)=>s+(p.SUP_HA||0),0);
+  
+  // Summary cards per operator + total
+  h+=`<div class="grid-3" style="margin-bottom:20px">`;
   ops.forEach(op=>{
     const d=opTotals[op];
     const eStats=embeddedOpStats[op]||{};
     const haReal=eStats.ha||0;
-    const haEst=haReal>0?haReal.toFixed(1):(d.matched/fph).toFixed(1);
+    const haStr=haReal>0?haReal.toFixed(1):(d.matched/fph).toFixed(1);
     const eff=d.pts>0?(d.matched/d.pts*100).toFixed(0):'0';
     const nDays=dates.filter(dt=>dailyData[dt]?.[op]).length;
     const icon=op.includes('M3E')?'🟦':op.includes('M3M')?'🟧':'👤';
@@ -1105,13 +1117,19 @@ function renderEquipos(){
       <div class="grid-3" style="margin-bottom:0">
         <div><div class="zone-stat-label">Foto-centros</div><div class="zone-stat-value">${d.pts.toLocaleString()}</div></div>
         <div><div class="zone-stat-label">En polígonos</div><div class="zone-stat-value" style="color:var(--success)">${d.matched.toLocaleString()}</div></div>
-        <div><div class="zone-stat-label">Sup. cubierta</div><div class="zone-stat-value">${haEst} ha</div></div>
+        <div><div class="zone-stat-label">Sup. cubierta</div><div class="zone-stat-value">${haStr} ha</div></div>
         <div><div class="zone-stat-label">Archivos</div><div class="zone-stat-value">${d.files}</div></div>
         <div><div class="zone-stat-label">Eficiencia</div><div class="zone-stat-value">${eff}%</div></div>
-        <div><div class="zone-stat-label">Ha/día prom.</div><div class="zone-stat-value">${nDays>0?(parseFloat(haEst)/nDays).toFixed(1):'—'}</div></div>
+        <div><div class="zone-stat-label">Ha/día prom.</div><div class="zone-stat-value">${nDays>0?(parseFloat(haStr)/nDays).toFixed(1):'—'}</div></div>
       </div>
     </div>`;
   });
+  // Total card
+  h+=`<div class="card" style="display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center">
+    <div style="font-size:13px;color:var(--text-dim);margin-bottom:8px">Superficie cubierta total</div>
+    <div style="font-size:36px;font-weight:800;color:var(--accent)">${totalCubierta.toFixed(1)} ha</div>
+    <div style="font-size:11px;color:var(--text-muted);margin-top:8px">Polígonos compartidos se cuentan<br>para cada equipo por separado</div>
+  </div>`;
   h+='</div>';
   
   // Combined daily table with all operators - using REAL ha from Python
@@ -1152,7 +1170,6 @@ function renderEquipos(){
   });
   
   // Totals row
-  const totalCubierta = getAllPolygons().filter(p=>p.ESTADO==='VOLADO'||p.ESTADO==='PARCIAL').reduce((s,p)=>s+(p.SUP_HA||0),0);
   h+=`<tr style="font-weight:700;border-top:3px solid var(--accent)"><td>TOTAL</td>`;
   ops.forEach(op=>{
     const d=opTotals[op];
