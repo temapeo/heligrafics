@@ -323,6 +323,8 @@ def process_intersections(polygons, mrk_points):
         p['_mrkHits'] = 0
         p['_cobertura'] = 0.0
         p['_opHits'] = defaultdict(int)  # hits per operator
+        p['_dateHits'] = defaultdict(int)  # hits per date
+        p['_opDateHits'] = defaultdict(lambda: defaultdict(int))  # hits per op+date
         if 'coords' in p and p['coords']:
             lats = [c[0] for c in p['coords']]
             lngs = [c[1] for c in p['coords']]
@@ -342,6 +344,8 @@ def process_intersections(polygons, mrk_points):
             if point_in_polygon(lat, lng, poly['coords']):
                 poly['_mrkHits'] += 1
                 poly['_opHits'][pt.get('operator', '?')] += 1
+                poly['_dateHits'][pt.get('date', '?')] += 1
+                poly['_opDateHits'][pt.get('operator', '?')][pt.get('date', '?')] += 1
                 pt['matched'] = True
                 matched_count += 1
                 break
@@ -534,37 +538,64 @@ def generate_dashboard(kml_data, mrk_data, all_polygons, operators, logo_b64):
         })
     
     # Pre-compute operator stats using real polygon surfaces
-    op_stats = defaultdict(lambda: {'pts': 0, 'matched': 0, 'files': set(), 'polys_ha': 0.0})
+    # Logic: for each operator, sum the SUP_HA of all polygons where that operator has hits
+    # For daily: sum SUP_HA of polygons where that op+date has hits
+    # This is consistent with Resumen (cubierta = sum of polys with any hits)
+    
+    op_total_ha = defaultdict(float)       # op -> total ha of polygons touched
+    op_date_ha = defaultdict(lambda: defaultdict(float))  # op -> date -> ha
+    date_total_ha = defaultdict(float)     # date -> ha (unique polygons)
+    
+    for p in all_polygons:
+        ha = p.get('SUP_HA', 0)
+        op_hits = p.get('_opHits', {})
+        op_date_hits = p.get('_opDateHits', {})
+        
+        if not op_hits:
+            continue
+        
+        # Each operator gets the full polygon ha if they have ANY hit there
+        for op in op_hits:
+            if op_hits[op] > 0:
+                op_total_ha[op] += ha
+        
+        # Per date: each date gets the polygon if it has hits on that date
+        date_hits = p.get('_dateHits', {})
+        for date in date_hits:
+            if date_hits[date] > 0:
+                date_total_ha[date] += ha
+        
+        # Per op+date: operator gets polygon ha if they hit it on that date
+        for op, date_dict in op_date_hits.items():
+            for date, hits in date_dict.items():
+                if hits > 0:
+                    op_date_ha[op][date] += ha
+    
+    # Build operator stats
+    op_pts = defaultdict(lambda: {'pts': 0, 'matched': 0, 'files': set()})
     for name, pts in mrk_data.items():
         for pt in pts:
             op = pt.get('operator', '?')
-            op_stats[op]['pts'] += 1
+            op_pts[op]['pts'] += 1
             if pt.get('matched'):
-                op_stats[op]['matched'] += 1
-            op_stats[op]['files'].add(pt.get('file', ''))
-    
-    # Calculate surface per operator from polygon opHits
-    op_poly_ha = defaultdict(float)
-    for p in all_polygons:
-        op_hits = p.get('_opHits', {})
-        if not op_hits:
-            continue
-        ha = p.get('SUP_HA', 0)
-        total_hits = sum(op_hits.values())
-        if total_hits == 0:
-            continue
-        # Split polygon area proportionally by operator contribution
-        for op, hits in op_hits.items():
-            op_poly_ha[op] += ha * hits / total_hits
+                op_pts[op]['matched'] += 1
+            op_pts[op]['files'].add(pt.get('file', ''))
     
     dashboard_data['opStats'] = {}
-    for op, d in op_stats.items():
+    for op in set(list(op_pts.keys()) + list(op_total_ha.keys())):
+        d = op_pts[op]
+        daily = {}
+        for date, ha in op_date_ha.get(op, {}).items():
+            daily[date] = round(ha, 1)
         dashboard_data['opStats'][op] = {
             'pts': d['pts'],
             'matched': d['matched'],
             'files': len(d['files']),
-            'ha': round(op_poly_ha.get(op, 0), 1)
+            'ha': round(op_total_ha.get(op, 0), 1),
+            'daily': daily
         }
+    
+    dashboard_data['dateStats'] = {date: round(ha, 1) for date, ha in date_total_ha.items()}
     
     data_json = json.dumps(dashboard_data, ensure_ascii=False)
     data_size_mb = len(data_json.encode('utf-8')) / (1024 * 1024)
@@ -683,6 +714,18 @@ def main():
             operators[folder] = operator
             
             folder_pts = 0
+            
+            # Extract date from folder name
+            import re as _re
+            date_match = _re.search(r'(\d{2})[-_]?(\d{2})[-_]?(\d{4})', folder)
+            folder_date = None
+            if date_match:
+                folder_date = f"{date_match.group(1)}/{date_match.group(2)}/{date_match.group(3)}"
+            else:
+                date_match2 = _re.search(r'(\d{4})(\d{2})(\d{2})', folder)
+                if date_match2:
+                    folder_date = f"{date_match2.group(3)}/{date_match2.group(2)}/{date_match2.group(1)}"
+            
             for mf in files:
                 cache_key = str(mf.relative_to(MRK_DIR))
                 file_hash = get_file_hash(mf)
@@ -696,9 +739,11 @@ def main():
                     cache_misses += 1
                 
                 if pts:
-                    # Tag with operator
+                    # Tag with operator and date
                     for pt in pts:
                         pt['operator'] = operator
+                        if folder_date:
+                            pt['date'] = folder_date
                     
                     rel_name = f"{folder}/{mf.name}" if folder != '(raíz)' else mf.name
                     all_mrk_data[rel_name] = pts

@@ -1114,52 +1114,58 @@ function renderEquipos(){
   });
   h+='</div>';
   
-  // Combined daily table with all operators
+  // Combined daily table with all operators - using REAL ha from Python
+  const dateStats = (typeof EMBEDDED_DATA !== 'undefined' && EMBEDDED_DATA.dateStats) ? EMBEDDED_DATA.dateStats : {};
+  
   h+=`<div class="card" style="margin-bottom:16px">
     <div class="card-header"><h3>📅 Avance diario por equipo</h3></div>
     <div class="table-wrap"><table>
       <thead><tr><th>Fecha</th>`;
   ops.forEach(op=>{
-    const short=op.replace('Equipo ','Eq');
-    h+=`<th colspan="2" style="text-align:center;border-left:2px solid var(--border)">${short}</th>`;
+    h+=`<th colspan="2" style="text-align:center;border-left:2px solid var(--border)">${op}</th>`;
   });
   h+=`<th style="border-left:2px solid var(--border)">Total día</th></tr>`;
   h+=`<tr><th></th>`;
-  ops.forEach(op=>{h+=`<th style="border-left:2px solid var(--border);font-size:10px">Fotos</th><th style="font-size:10px">Ha est.</th>`});
-  h+=`<th style="border-left:2px solid var(--border);font-size:10px">Ha est.</th></tr></thead><tbody>`;
+  ops.forEach(op=>{h+=`<th style="border-left:2px solid var(--border);font-size:10px">Fotos</th><th style="font-size:10px">Sup. ha</th>`});
+  h+=`<th style="border-left:2px solid var(--border);font-size:10px">Sup. ha</th></tr></thead><tbody>`;
   
-  let grandTotal={pts:0,matched:0};
+  let grandPts=0, grandHa=0;
   dates.forEach(date=>{
-    let dayTotal=0;
     h+=`<tr><td style="font-weight:600">${date}</td>`;
+    let dayPts=0;
     ops.forEach(op=>{
       const d=dailyData[date]?.[op];
+      // Use pre-computed daily ha from Python
+      const opDaily=embeddedOpStats[op]?.daily||{};
+      const realHa=opDaily[date]||0;
       if(d){
-        const ha=(d.matched/fph).toFixed(1);
-        dayTotal+=d.matched/fph;
-        grandTotal.pts+=d.pts;
-        grandTotal.matched+=d.matched;
-        h+=`<td class="mono" style="border-left:2px solid var(--border)">${d.pts.toLocaleString()}</td><td class="mono" style="color:var(--success);font-weight:600">${ha}</td>`;
+        dayPts+=d.pts;
+        grandPts+=d.pts;
+        h+=`<td class="mono" style="border-left:2px solid var(--border)">${d.pts.toLocaleString()}</td><td class="mono" style="color:var(--success);font-weight:600">${realHa>0?realHa.toFixed(1):'—'}</td>`;
       } else {
         h+=`<td class="mono" style="border-left:2px solid var(--border);color:var(--text-muted)">—</td><td class="mono" style="color:var(--text-muted)">—</td>`;
       }
     });
-    h+=`<td class="mono" style="border-left:2px solid var(--border);font-weight:700">${dayTotal.toFixed(1)} ha</td></tr>`;
+    const dayHa=dateStats[date]||0;
+    grandHa+=dayHa;
+    h+=`<td class="mono" style="border-left:2px solid var(--border);font-weight:700">${dayHa>0?dayHa.toFixed(1):'0.0'} ha</td></tr>`;
   });
   
   // Totals row
+  const totalCubierta = getAllPolygons().filter(p=>p.ESTADO==='VOLADO'||p.ESTADO==='PARCIAL').reduce((s,p)=>s+(p.SUP_HA||0),0);
   h+=`<tr style="font-weight:700;border-top:3px solid var(--accent)"><td>TOTAL</td>`;
   ops.forEach(op=>{
     const d=opTotals[op];
-    h+=`<td class="mono" style="border-left:2px solid var(--border)">${d.pts.toLocaleString()}</td><td class="mono" style="color:var(--success)">${(d.matched/fph).toFixed(1)}</td>`;
+    const realHa=embeddedOpStats[op]?.ha||0;
+    h+=`<td class="mono" style="border-left:2px solid var(--border)">${d.pts.toLocaleString()}</td><td class="mono" style="color:var(--success)">${realHa.toFixed(1)}</td>`;
   });
-  h+=`<td class="mono" style="border-left:2px solid var(--border);color:var(--accent);font-size:16px">${(grandTotal.matched/fph).toFixed(1)} ha</td></tr>`;
+  h+=`<td class="mono" style="border-left:2px solid var(--border);color:var(--accent);font-size:16px">${totalCubierta.toFixed(1)} ha</td></tr>`;
   h+=`</tbody></table></div></div>`;
   
   // Meta
   const rendTarget=P.rendHaDia||100;
   h+=`<div style="font-size:11px;color:var(--text-muted);text-align:center;margin-top:10px">
-    Ha estimada = foto-centros en polígonos ÷ ${fph} fotos/ha · Rendimiento objetivo: ${rendTarget} ha/día/equipo
+    Sup. ha = superficie real de polígonos cubiertos por cada equipo · Rendimiento objetivo: ${rendTarget} ha/día/equipo · Total = superficie cubierta (volada + parcial)
   </div>`;
   
   c.innerHTML=h;
