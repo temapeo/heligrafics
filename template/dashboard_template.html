@@ -244,7 +244,7 @@ tr:hover td{background:var(--surface2)}
       <button class="tab" onclick="switchTab('map',this)">🗺️ Mapa</button>
       <button class="tab" onclick="switchTab('data',this)">📂 Datos</button>
       <button class="tab" onclick="switchTab('zones',this)">📋 Zonas</button>
-      <button class="tab" id="tabEquipos" onclick="switchTab('equipos',this)">👥 Equipos</button>
+      <button class="tab" id="tabEquipos" onclick="switchTab('equipos',this)">🔒 Equipos</button>
     </div>
 
     <!-- OVERVIEW -->
@@ -1058,7 +1058,23 @@ function renderTimeline(){
 }
 
 // ========== TABS ==========
-function switchTab(id,btn){document.querySelectorAll('[id^="tab-"]').forEach(e=>e.classList.add('hidden'));document.querySelectorAll('.tab').forEach(e=>e.classList.remove('active'));document.getElementById('tab-'+id).classList.remove('hidden');btn.classList.add('active');if(id==='map'&&map)setTimeout(()=>map.invalidateSize(),100);if(id==='equipos')renderEquipos()}
+function switchTab(id,btn){
+  // Password protection for Equipos tab
+  if(id==='equipos' && !window._equiposAuth){
+    const pwd=prompt('🔒 Ingrese clave para acceder a Equipos:');
+    if(!pwd || pwd.toLowerCase()!=='mavic'){
+      alert('Clave incorrecta');
+      return;
+    }
+    window._equiposAuth=true;
+  }
+  document.querySelectorAll('[id^="tab-"]').forEach(e=>e.classList.add('hidden'));
+  document.querySelectorAll('.tab').forEach(e=>e.classList.remove('active'));
+  document.getElementById('tab-'+id).classList.remove('hidden');
+  btn.classList.add('active');
+  if(id==='map'&&map)setTimeout(()=>map.invalidateSize(),100);
+  if(id==='equipos')renderEquipos();
+}
 
 // ========== ADMIN MODE ==========
 const IS_ADMIN = new URLSearchParams(window.location.search).has('admin');
