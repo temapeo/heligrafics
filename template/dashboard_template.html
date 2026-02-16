@@ -244,8 +244,6 @@ tr:hover td{background:var(--surface2)}
       <button class="tab" onclick="switchTab('map',this)">🗺️ Mapa</button>
       <button class="tab" onclick="switchTab('data',this)">📂 Datos</button>
       <button class="tab" onclick="switchTab('zones',this)">📋 Zonas</button>
-      <button class="tab" onclick="switchTab('flights',this)">✈️ Vuelos</button>
-      <button class="tab" onclick="switchTab('timeline',this)">📅 Cronograma</button>
       <button class="tab" id="tabEquipos" onclick="switchTab('equipos',this)">👥 Equipos</button>
     </div>
 
@@ -776,15 +774,11 @@ function renderKMLProgressCards(){
     if(fnL.includes('chillan')||fnL.includes('chillán')||fnL.includes('norte')){icon='🔵';label='Zona Norte — Chillán'}
     else if(fnL.includes('valdivia')||fnL.includes('sur')){icon='🟣';label='Zona Sur — Valdivia'}
     const fromCalc = f.polygons.filter(p=>p._supSource==='calc').length;
-    const supWarn = fromCalc>0 ? `<div style="font-size:10px;color:var(--warning);margin-top:4px">⚠️ ${fromCalc} polígonos con sup. calculada</div>` : '';
     html+=`<div class="card">
       <div class="progress-header"><span class="progress-title">${icon} ${label}</span><span class="progress-pct">${pct.toFixed(1)}%</span></div>
-      <div class="progress-bar" style="position:relative">
-        <div class="progress-fill" style="width:${pct}%;background:#e67e22;border-radius:6px"></div>
-        <div class="progress-fill" style="width:${pctVol}%;position:absolute;top:0;left:0;border-radius:6px"></div>
-      </div>
-      <div class="progress-detail"><span style="color:var(--success)">✅ ${fmt(vh)} ha</span><span style="color:#e67e22">🔶 ${fmt(ph)} ha</span><span>📊 ${fmt(cubierta)} / ${fmt(th)} ha</span></div>
-      <div style="font-size:11px;color:var(--text-muted);margin-top:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${f.name}">📎 ${f.name}</div>${supWarn}
+      <div class="progress-bar"><div class="progress-fill" style="width:${pct}%;border-radius:6px"></div></div>
+      <div class="progress-detail"><span style="color:var(--success)">✅ ${fmt(cubierta)} ha voladas</span><span>📊 ${fmt(cubierta)} / ${fmt(th)} ha</span></div>
+      <div style="font-size:11px;color:var(--text-muted);margin-top:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${f.name}">📎 ${f.name}</div>
       <div class="zone-stats" style="margin-top:10px"><div><div class="zone-stat-label">Predios</div><div class="zone-stat-value">${pr.size}</div></div><div><div class="zone-stat-label">Polígonos</div><div class="zone-stat-value">${ps.length}</div></div><div><div class="zone-stat-label">Est. restante</div><div class="zone-stat-value">${d} días</div></div></div>
     </div>`;
   });
@@ -974,8 +968,36 @@ function updateMap(){
 // ========== ZONES ==========
 function renderZones(){
   const polys=getAllPolygons(),c=document.getElementById('zonesContent'),z={};
-  polys.forEach(p=>{const zn=p.ZONA||'Sin zona';if(!z[zn])z[zn]={areas:{},th:0,np:0,pr:new Set()};z[zn].th+=(p.SUP_HA||0);z[zn].np++;if(p.ID_PREDIO)z[zn].pr.add(p.ID_PREDIO);const a=p.AREA||'Sin área';if(!z[zn].areas[a])z[zn].areas[a]={th:0,np:0,es:{}};z[zn].areas[a].th+=(p.SUP_HA||0);z[zn].areas[a].np++;const e=p.ESTADO||'PENDIENTE';z[zn].areas[a].es[e]=(z[zn].areas[a].es[e]||0)+1});
-  let h='';Object.entries(z).sort((a,b)=>b[1].th-a[1].th).forEach(([zn,d])=>{h+=`<div class="card" style="margin-bottom:16px"><div class="card-header"><h3>🔵 ${zn}</h3><span class="mono" style="font-size:16px;font-weight:700;color:var(--accent)">${fmt(d.th)} ha</span></div><div class="grid-3" style="margin-bottom:14px"><div><div class="zone-stat-label">Polígonos</div><div class="zone-stat-value">${d.np}</div></div><div><div class="zone-stat-label">Predios</div><div class="zone-stat-value">${d.pr.size}</div></div><div><div class="zone-stat-label">Días est.</div><div class="zone-stat-value">${Math.ceil(d.th/(P.rendHaDia*P.equipos))}</div></div></div><div class="table-wrap"><table><thead><tr><th>Área</th><th>Sup (ha)</th><th># Pol</th><th>Pend</th><th>Volado</th><th>Parcial</th></tr></thead><tbody>`;Object.entries(d.areas).sort((a,b)=>b[1].th-a[1].th).forEach(([a,ad])=>{h+=`<tr><td>${a}</td><td class="mono">${ad.th.toFixed(1)}</td><td class="mono">${ad.np}</td><td class="mono">${ad.es.PENDIENTE||0}</td><td class="mono" style="color:var(--success)">${ad.es.VOLADO||0}</td><td class="mono" style="color:var(--warning)">${ad.es.PARCIAL||0}</td></tr>`});h+=`</tbody></table></div></div>`});
+  polys.forEach(p=>{
+    const zn=p.ZONA||'Sin zona';
+    if(!z[zn])z[zn]={areas:{},th:0,np:0,pr:new Set()};
+    z[zn].th+=(p.SUP_HA||0);z[zn].np++;
+    if(p.ID_PREDIO)z[zn].pr.add(p.ID_PREDIO);
+    const a=p.AREA||'Sin área';
+    if(!z[zn].areas[a])z[zn].areas[a]={th:0,np:0,haVol:0,haPar:0,haPend:0};
+    const ha=p.SUP_HA||0;
+    z[zn].areas[a].th+=ha;z[zn].areas[a].np++;
+    // Use _polyEstado for accurate per-polygon coverage
+    const pe=p._polyEstado||'PENDIENTE';
+    if(pe==='VOLADO') z[zn].areas[a].haVol+=ha;
+    else if(pe==='PARCIAL') z[zn].areas[a].haPar+=ha;
+    else z[zn].areas[a].haPend+=ha;
+  });
+  let h='';Object.entries(z).sort((a,b)=>b[1].th-a[1].th).forEach(([zn,d])=>{
+    const zoneCub=Object.values(d.areas).reduce((s,a)=>s+a.haVol+a.haPar,0);
+    const zonePend=d.th-zoneCub;
+    const diasEst=Math.ceil(zonePend/(P.rendHaDia*P.equipos));
+    h+=`<div class="card" style="margin-bottom:16px"><div class="card-header"><h3>🔵 ${zn}</h3><span class="mono" style="font-size:16px;font-weight:700;color:var(--accent)">${fmt(d.th)} ha</span></div>
+    <div class="grid-3" style="margin-bottom:14px"><div><div class="zone-stat-label">Polígonos</div><div class="zone-stat-value">${d.np}</div></div><div><div class="zone-stat-label">Predios</div><div class="zone-stat-value">${d.pr.size}</div></div><div><div class="zone-stat-label">Días est.</div><div class="zone-stat-value">${diasEst}</div></div></div>
+    <div class="table-wrap"><table><thead><tr><th>Área</th><th>Sup (ha)</th><th># Pol</th><th>Pendiente (ha)</th><th>Volado (ha)</th><th>Parcial (ha)</th></tr></thead><tbody>`;
+    Object.entries(d.areas).sort((a,b)=>b[1].th-a[1].th).forEach(([a,ad])=>{
+      h+=`<tr><td>${a}</td><td class="mono">${ad.th.toFixed(1)}</td><td class="mono">${ad.np}</td>
+      <td class="mono">${ad.haPend.toFixed(1)}</td>
+      <td class="mono" style="color:var(--success)">${ad.haVol>0?ad.haVol.toFixed(1):'0'}</td>
+      <td class="mono" style="color:var(--warning)">${ad.haPar>0?ad.haPar.toFixed(1):'0'}</td></tr>`;
+    });
+    h+=`</tbody></table></div></div>`;
+  });
   c.innerHTML=h;
 }
 
