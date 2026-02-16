@@ -549,15 +549,17 @@ def generate_dashboard(kml_data, mrk_data, all_polygons, operators, logo_b64):
             'dateAdded': datetime.now().strftime('%d/%m/%Y %H:%M')
         })
     
-    # Pre-compute operator stats using per-POLYGON coverage
-    # Only count polygons where _polyEstado is VOLADO or PARCIAL (has actual coverage)
+    # Pre-compute operator and daily stats using per-POLYGON coverage
+    # Key principle: each polygon's ha is counted ONCE in the daily total,
+    # assigned to the EARLIEST date it was touched (incremental coverage)
     
-    op_total_ha = defaultdict(float)       # op -> ha of covered polygons touched
-    op_date_ha = defaultdict(lambda: defaultdict(float))  # op -> date -> ha
-    date_total_ha = defaultdict(float)     # date -> ha of unique covered polygons
+    op_total_ha = defaultdict(float)  # op -> ha (polygons touched, may overlap)
     
-    for p in all_polygons:
-        # Only count polygons with actual coverage
+    # For daily table: incremental — assign polygon to the date that 
+    # contributed the MOST points (primary coverage), not just first touch
+    daily_incremental_ha = {}  # date -> ha of polygons primarily covered that day
+    
+    for i, p in enumerate(all_polygons):
         poly_estado = p.get('_polyEstado', 'PENDIENTE')
         if poly_estado == 'PENDIENTE':
             continue
@@ -570,18 +572,11 @@ def generate_dashboard(kml_data, mrk_data, all_polygons, operators, logo_b64):
             if hits > 0:
                 op_total_ha[op] += ha
         
-        # Which dates touched this polygon
+        # Assign to date with MOST hits (the day that actually covered it)
         date_hits = p.get('_dateHits', {})
-        for date, hits in date_hits.items():
-            if hits > 0:
-                date_total_ha[date] += ha
-        
-        # Which operator+date combos
-        op_date_hits = p.get('_opDateHits', {})
-        for op, date_dict in op_date_hits.items():
-            for date, hits in date_dict.items():
-                if hits > 0:
-                    op_date_ha[op][date] += ha
+        if date_hits:
+            primary_date = max(date_hits.items(), key=lambda x: x[1])[0]
+            daily_incremental_ha[primary_date] = daily_incremental_ha.get(primary_date, 0) + ha
     
     # Build operator stats
     op_pts = defaultdict(lambda: {'pts': 0, 'matched': 0, 'files': set()})
@@ -596,28 +591,48 @@ def generate_dashboard(kml_data, mrk_data, all_polygons, operators, logo_b64):
     dashboard_data['opStats'] = {}
     for op in set(list(op_pts.keys()) + list(op_total_ha.keys())):
         d = op_pts[op]
-        daily = {}
-        for date, ha in op_date_ha.get(op, {}).items():
-            daily[date] = round(ha, 1)
         dashboard_data['opStats'][op] = {
             'pts': d['pts'],
             'matched': d['matched'],
             'files': len(d['files']),
-            'ha': round(op_total_ha.get(op, 0), 1),
-            'daily': daily
+            'ha': round(op_total_ha.get(op, 0), 1)
         }
     
-    dashboard_data['dateStats'] = {date: round(ha, 1) for date, ha in date_total_ha.items()}
+    # dateStats: incremental (sums to total cubierta)
+    dashboard_data['dateStats'] = {date: round(ha, 1) for date, ha in daily_incremental_ha.items()}
     
-    # Diagnostic: verify totals
+    # Diagnostic
     cubierta_real = sum(p.get('SUP_HA', 0) for p in all_polygons 
                        if p.get('_polyEstado') in ('VOLADO', 'PARCIAL'))
+    sum_daily = sum(daily_incremental_ha.values())
     print(f"\n   📊 Verificación Equipos (por polígono):")
     for op in sorted(op_total_ha.keys()):
-        print(f"      {op}: {op_total_ha[op]:,.1f} ha")
-        for date in sorted(op_date_ha[op].keys()):
-            print(f"         {date}: {op_date_ha[op][date]:,.1f} ha")
-    print(f"      Cubierta real (por polígono): {cubierta_real:,.1f} ha")
+        print(f"      {op}: {op_total_ha[op]:,.1f} ha (polígonos tocados)")
+    print(f"      Cubierta real: {cubierta_real:,.1f} ha")
+    print(f"      Suma diaria incremental: {sum_daily:,.1f} ha {'✅' if abs(sum_daily - cubierta_real) < 0.5 else '❌'}")
+    
+    if abs(sum_daily - cubierta_real) >= 0.5:
+        # Find polygons with coverage but no date hits
+        dateless_ha = 0
+        dateless_count = 0
+        for p in all_polygons:
+            if p.get('_polyEstado') in ('VOLADO', 'PARCIAL'):
+                date_hits = p.get('_dateHits', {})
+                if not any(h > 0 for h in date_hits.values()):
+                    dateless_ha += p.get('SUP_HA', 0)
+                    dateless_count += 1
+        print(f"      ⚠️  {dateless_count} polígonos cubiertos sin fecha ({dateless_ha:,.1f} ha)")
+        
+        # Assign dateless polygons to earliest available date
+        if dateless_count > 0 and daily_incremental_ha:
+            earliest = sorted(daily_incremental_ha.keys())[0]
+            daily_incremental_ha[earliest] = daily_incremental_ha.get(earliest, 0) + dateless_ha
+            dashboard_data['dateStats'] = {date: round(ha, 1) for date, ha in daily_incremental_ha.items()}
+            sum_daily = sum(daily_incremental_ha.values())
+            print(f"      → Asignados a {earliest}. Nueva suma: {sum_daily:,.1f} ha")
+    
+    for date in sorted(daily_incremental_ha.keys()):
+        print(f"         {date}: +{daily_incremental_ha[date]:,.1f} ha nuevas")
     
     data_json = json.dumps(dashboard_data, ensure_ascii=False)
     data_size_mb = len(data_json.encode('utf-8')) / (1024 * 1024)
@@ -737,16 +752,24 @@ def main():
             
             folder_pts = 0
             
-            # Extract date from folder name
+            # Extract date from folder name (search full path for date patterns)
             import re as _re
-            date_match = _re.search(r'(\d{2})[-_]?(\d{2})[-_]?(\d{4})', folder)
             folder_date = None
+            # Try DD-MM-YYYY or DD_MM_YYYY or DDMMYYYY in folder path
+            date_match = _re.search(r'(\d{2})[-_ ](\d{2})[-_ ](\d{4})', folder)
             if date_match:
                 folder_date = f"{date_match.group(1)}/{date_match.group(2)}/{date_match.group(3)}"
             else:
-                date_match2 = _re.search(r'(\d{4})(\d{2})(\d{2})', folder)
+                # Try DDMMYYYY (8 consecutive digits)
+                date_match2 = _re.search(r'(\d{2})(\d{2})(\d{4})', folder)
                 if date_match2:
-                    folder_date = f"{date_match2.group(3)}/{date_match2.group(2)}/{date_match2.group(1)}"
+                    dd, mm, yyyy = date_match2.group(1), date_match2.group(2), date_match2.group(3)
+                    # Validate it looks like a date
+                    if 1 <= int(dd) <= 31 and 1 <= int(mm) <= 12 and 2020 <= int(yyyy) <= 2030:
+                        folder_date = f"{dd}/{mm}/{yyyy}"
+            
+            if not folder_date:
+                print(f"   ⚠️  Sin fecha detectada en carpeta: {folder}")
             
             for mf in files:
                 cache_key = str(mf.relative_to(MRK_DIR))

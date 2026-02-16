@@ -1104,85 +1104,74 @@ function renderEquipos(){
   const totalCubierta = getAllPolygons().filter(p=>p._polyEstado==='VOLADO'||p._polyEstado==='PARCIAL').reduce((s,p)=>s+(p.SUP_HA||0),0);
   
   // Summary cards per operator + total
+  const totalHa=getAllPolygons().reduce((s,p)=>s+(p.SUP_HA||0),0);
   h+=`<div class="grid-3" style="margin-bottom:20px">`;
   ops.forEach(op=>{
     const d=opTotals[op];
-    const eStats=embeddedOpStats[op]||{};
-    const haReal=eStats.ha||0;
-    const haStr=haReal>0?haReal.toFixed(1):(d.matched/fph).toFixed(1);
     const eff=d.pts>0?(d.matched/d.pts*100).toFixed(0):'0';
     const nDays=dates.filter(dt=>dailyData[dt]?.[op]).length;
     const icon=op.includes('M3E')?'🟦':op.includes('M3M')?'🟧':'👤';
     h+=`<div class="card">
       <div class="card-header"><h3>${icon} ${op}</h3></div>
-      <div class="grid-3" style="margin-bottom:0">
+      <div class="grid-2" style="margin-bottom:0">
         <div><div class="zone-stat-label">Foto-centros</div><div class="zone-stat-value">${d.pts.toLocaleString()}</div></div>
         <div><div class="zone-stat-label">En polígonos</div><div class="zone-stat-value" style="color:var(--success)">${d.matched.toLocaleString()}</div></div>
-        <div><div class="zone-stat-label">Sup. cubierta</div><div class="zone-stat-value">${haStr} ha</div></div>
-        <div><div class="zone-stat-label">Archivos</div><div class="zone-stat-value">${d.files}</div></div>
         <div><div class="zone-stat-label">Eficiencia</div><div class="zone-stat-value">${eff}%</div></div>
-        <div><div class="zone-stat-label">Ha/día prom.</div><div class="zone-stat-value">${nDays>0?(parseFloat(haStr)/nDays).toFixed(1):'—'}</div></div>
+        <div><div class="zone-stat-label">Días volados</div><div class="zone-stat-value">${nDays}</div></div>
       </div>
     </div>`;
   });
   // Total card
   h+=`<div class="card" style="display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center">
-    <div style="font-size:13px;color:var(--text-dim);margin-bottom:8px">Superficie cubierta total</div>
+    <div style="font-size:13px;color:var(--text-dim);margin-bottom:8px">Superficie cubierta</div>
     <div style="font-size:36px;font-weight:800;color:var(--accent)">${totalCubierta.toFixed(1)} ha</div>
+    <div style="font-size:12px;color:var(--text-muted);margin-top:8px">${totalHa>0?(totalCubierta/totalHa*100).toFixed(1):'0'}% del total</div>
   </div>`;
   h+='</div>';
   
-  // Combined daily table with all operators - using REAL ha from Python
+  // Combined daily table - fotos per operator, incremental ha total (sums to cubierta)
   const dateStats = (typeof EMBEDDED_DATA !== 'undefined' && EMBEDDED_DATA.dateStats) ? EMBEDDED_DATA.dateStats : {};
   
   h+=`<div class="card" style="margin-bottom:16px">
-    <div class="card-header"><h3>📅 Avance diario por equipo</h3></div>
+    <div class="card-header"><h3>📅 Avance diario</h3></div>
     <div class="table-wrap"><table>
       <thead><tr><th>Fecha</th>`;
   ops.forEach(op=>{
-    h+=`<th colspan="2" style="text-align:center;border-left:2px solid var(--border)">${op}</th>`;
+    h+=`<th style="text-align:center;border-left:2px solid var(--border)">${op}<br><span style="font-size:10px;font-weight:400">fotos</span></th>`;
   });
-  h+=`<th style="border-left:2px solid var(--border)">Total día</th></tr>`;
-  h+=`<tr><th></th>`;
-  ops.forEach(op=>{h+=`<th style="border-left:2px solid var(--border);font-size:10px">Fotos</th><th style="font-size:10px">Sup. ha</th>`});
-  h+=`<th style="border-left:2px solid var(--border);font-size:10px">Sup. ha</th></tr></thead><tbody>`;
+  h+=`<th style="border-left:2px solid var(--border)">Sup. nueva</th><th>Acumulado</th></tr></thead><tbody>`;
   
-  let grandPts=0, grandHa=0;
+  let acum=0;
   dates.forEach(date=>{
+    const dayHa=dateStats[date]||0;
+    acum+=dayHa;
     h+=`<tr><td style="font-weight:600">${date}</td>`;
-    let dayPts=0;
     ops.forEach(op=>{
       const d=dailyData[date]?.[op];
-      // Use pre-computed daily ha from Python
-      const opDaily=embeddedOpStats[op]?.daily||{};
-      const realHa=opDaily[date]||0;
       if(d){
-        dayPts+=d.pts;
-        grandPts+=d.pts;
-        h+=`<td class="mono" style="border-left:2px solid var(--border)">${d.pts.toLocaleString()}</td><td class="mono" style="color:var(--success);font-weight:600">${realHa>0?realHa.toFixed(1):'—'}</td>`;
+        h+=`<td class="mono" style="border-left:2px solid var(--border);text-align:center">${d.pts.toLocaleString()}</td>`;
       } else {
-        h+=`<td class="mono" style="border-left:2px solid var(--border);color:var(--text-muted)">—</td><td class="mono" style="color:var(--text-muted)">—</td>`;
+        h+=`<td class="mono" style="border-left:2px solid var(--border);color:var(--text-muted);text-align:center">—</td>`;
       }
     });
-    const dayHa=dateStats[date]||0;
-    grandHa+=dayHa;
-    h+=`<td class="mono" style="border-left:2px solid var(--border);font-weight:700">${dayHa>0?dayHa.toFixed(1):'0.0'} ha</td></tr>`;
+    h+=`<td class="mono" style="border-left:2px solid var(--border);font-weight:600;color:var(--success)">+${dayHa.toFixed(1)} ha</td>`;
+    h+=`<td class="mono" style="font-weight:700">${acum.toFixed(1)} ha</td></tr>`;
   });
   
   // Totals row
   h+=`<tr style="font-weight:700;border-top:3px solid var(--accent)"><td>TOTAL</td>`;
   ops.forEach(op=>{
     const d=opTotals[op];
-    const realHa=embeddedOpStats[op]?.ha||0;
-    h+=`<td class="mono" style="border-left:2px solid var(--border)">${d.pts.toLocaleString()}</td><td class="mono" style="color:var(--success)">${realHa.toFixed(1)}</td>`;
+    h+=`<td class="mono" style="border-left:2px solid var(--border);text-align:center">${d.pts.toLocaleString()}</td>`;
   });
-  h+=`<td class="mono" style="border-left:2px solid var(--border);color:var(--accent);font-size:16px">${totalCubierta.toFixed(1)} ha</td></tr>`;
+  h+=`<td class="mono" style="border-left:2px solid var(--border);color:var(--success)">${acum.toFixed(1)} ha</td>`;
+  h+=`<td class="mono" style="color:var(--accent);font-size:16px">${totalCubierta.toFixed(1)} ha</td></tr>`;
   h+=`</tbody></table></div></div>`;
   
   // Meta
   const rendTarget=P.rendHaDia||100;
   h+=`<div style="font-size:11px;color:var(--text-muted);text-align:center;margin-top:10px">
-    Sup. ha = superficie real de polígonos cubiertos por cada equipo · Rendimiento objetivo: ${rendTarget} ha/día/equipo · Total = superficie cubierta (volada + parcial)
+    Sup. nueva = polígonos cubiertos por primera vez ese día · Acumulado = total progresivo · Rendimiento objetivo: ${rendTarget} ha/día/equipo
   </div>`;
   
   c.innerHTML=h;
