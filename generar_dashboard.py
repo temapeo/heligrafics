@@ -322,6 +322,7 @@ def process_intersections(polygons, mrk_points):
     for p in polygons:
         p['_mrkHits'] = 0
         p['_cobertura'] = 0.0
+        p['_opHits'] = defaultdict(int)  # hits per operator
         if 'coords' in p and p['coords']:
             lats = [c[0] for c in p['coords']]
             lngs = [c[1] for c in p['coords']]
@@ -340,6 +341,7 @@ def process_intersections(polygons, mrk_points):
                 continue
             if point_in_polygon(lat, lng, poly['coords']):
                 poly['_mrkHits'] += 1
+                poly['_opHits'][pt.get('operator', '?')] += 1
                 pt['matched'] = True
                 matched_count += 1
                 break
@@ -446,10 +448,7 @@ def process_intersections(polygons, mrk_points):
             p['_polyEstado'] = 'PENDIENTE'
     
     # --- Propagar estado a nivel de predio ---
-    # Regla: si ≥80% de la superficie del predio está volada → VOLADO
-    # Esto evita que polígonos chicos pendientes (cortafuegos, bordes) bajen todo el predio
-    UMBRAL_PREDIO = 0.80  # 80% superficie volada = predio VOLADO
-    
+    # Regla estricta: todos los polígonos deben ser VOLADO para que el predio sea VOLADO
     predios = defaultdict(list)
     for p in polygons:
         key = p.get('NOM_PREDIO', p.get('ID_PREDIO', ''))
@@ -457,19 +456,14 @@ def process_intersections(polygons, mrk_points):
             predios[key].append(p)
     
     for predio, polys in predios.items():
-        total_ha = sum(p.get('SUP_HA', 0) for p in polys)
-        volado_ha = sum(p.get('SUP_HA', 0) for p in polys if p['_polyEstado'] == 'VOLADO')
-        parcial_ha = sum(p.get('SUP_HA', 0) for p in polys if p['_polyEstado'] == 'PARCIAL')
+        estados = set(p['_polyEstado'] for p in polys)
         total_hits = sum(p.get('_mrkHits', 0) for p in polys)
         
-        pct_volado = volado_ha / total_ha if total_ha > 0 else 0
-        
-        if pct_volado >= UMBRAL_PREDIO:
-            # ≥80% de superficie volada → predio VOLADO
+        if estados == {'VOLADO'}:
             predio_estado = 'VOLADO'
         elif total_hits == 0 and all(p.get('_cobertura', 0) == 0 for p in polys):
             predio_estado = 'PENDIENTE'
-        elif volado_ha + parcial_ha > 0:
+        elif any(p.get('_cobertura', 0) > 0 or p.get('_mrkHits', 0) > 0 for p in polys):
             predio_estado = 'PARCIAL'
         else:
             predio_estado = 'PENDIENTE'
@@ -489,7 +483,7 @@ def process_intersections(polygons, mrk_points):
 # ============================================================
 # GENERACIÓN DEL DASHBOARD
 # ============================================================
-def generate_dashboard(kml_data, mrk_data, operators, logo_b64):
+def generate_dashboard(kml_data, mrk_data, all_polygons, operators, logo_b64):
     """Genera el HTML del dashboard con datos embebidos."""
     
     template_path = TEMPLATE_DIR / "dashboard_template.html"
@@ -539,8 +533,8 @@ def generate_dashboard(kml_data, mrk_data, operators, logo_b64):
             'dateAdded': datetime.now().strftime('%d/%m/%Y %H:%M')
         })
     
-    # Pre-compute operator stats for Equipos tab
-    op_stats = defaultdict(lambda: {'pts': 0, 'matched': 0, 'files': set()})
+    # Pre-compute operator stats using real polygon surfaces
+    op_stats = defaultdict(lambda: {'pts': 0, 'matched': 0, 'files': set(), 'polys_ha': 0.0})
     for name, pts in mrk_data.items():
         for pt in pts:
             op = pt.get('operator', '?')
@@ -549,12 +543,27 @@ def generate_dashboard(kml_data, mrk_data, operators, logo_b64):
                 op_stats[op]['matched'] += 1
             op_stats[op]['files'].add(pt.get('file', ''))
     
+    # Calculate surface per operator from polygon opHits
+    op_poly_ha = defaultdict(float)
+    for p in all_polygons:
+        op_hits = p.get('_opHits', {})
+        if not op_hits:
+            continue
+        ha = p.get('SUP_HA', 0)
+        total_hits = sum(op_hits.values())
+        if total_hits == 0:
+            continue
+        # Split polygon area proportionally by operator contribution
+        for op, hits in op_hits.items():
+            op_poly_ha[op] += ha * hits / total_hits
+    
     dashboard_data['opStats'] = {}
     for op, d in op_stats.items():
         dashboard_data['opStats'][op] = {
             'pts': d['pts'],
             'matched': d['matched'],
-            'files': len(d['files'])
+            'files': len(d['files']),
+            'ha': round(op_poly_ha.get(op, 0), 1)
         }
     
     data_json = json.dumps(dashboard_data, ensure_ascii=False)
@@ -798,7 +807,7 @@ def main():
     
     # 5. Generar dashboard
     print("\n📄 Generando dashboard...")
-    html = generate_dashboard(all_kml_data, all_mrk_data, operators, logo_b64)
+    html = generate_dashboard(all_kml_data, all_mrk_data, all_polygons, operators, logo_b64)
     
     output_path = OUTPUT_DIR / "index.html"
     with open(output_path, 'w', encoding='utf-8') as f:

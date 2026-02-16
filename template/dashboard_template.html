@@ -1084,6 +1084,9 @@ function renderEquipos(){
     });
   });
   
+  // Get pre-computed operator stats from Python (accurate ha from polygon surfaces)
+  const embeddedOpStats = (typeof EMBEDDED_DATA !== 'undefined' && EMBEDDED_DATA.opStats) ? EMBEDDED_DATA.opStats : {};
+  
   let h='';
   
   // Summary cards per operator
@@ -1091,18 +1094,21 @@ function renderEquipos(){
   h+=`<div class="grid-${gridCols}" style="margin-bottom:20px">`;
   ops.forEach(op=>{
     const d=opTotals[op];
-    const haEst=(d.matched/fph).toFixed(1);
+    const eStats=embeddedOpStats[op]||{};
+    const haReal=eStats.ha||0;
+    const haEst=haReal>0?haReal.toFixed(1):(d.matched/fph).toFixed(1);
     const eff=d.pts>0?(d.matched/d.pts*100).toFixed(0):'0';
+    const nDays=dates.filter(dt=>dailyData[dt]?.[op]).length;
     const icon=op.includes('M3E')?'🟦':op.includes('M3M')?'🟧':'👤';
     h+=`<div class="card">
       <div class="card-header"><h3>${icon} ${op}</h3></div>
       <div class="grid-3" style="margin-bottom:0">
         <div><div class="zone-stat-label">Foto-centros</div><div class="zone-stat-value">${d.pts.toLocaleString()}</div></div>
         <div><div class="zone-stat-label">En polígonos</div><div class="zone-stat-value" style="color:var(--success)">${d.matched.toLocaleString()}</div></div>
-        <div><div class="zone-stat-label">Ha estimada</div><div class="zone-stat-value">${haEst}</div></div>
+        <div><div class="zone-stat-label">Sup. cubierta</div><div class="zone-stat-value">${haEst} ha</div></div>
         <div><div class="zone-stat-label">Archivos</div><div class="zone-stat-value">${d.files}</div></div>
         <div><div class="zone-stat-label">Eficiencia</div><div class="zone-stat-value">${eff}%</div></div>
-        <div><div class="zone-stat-label">Ha/día prom.</div><div class="zone-stat-value">${dates.length>0?(d.matched/fph/dates.length).toFixed(1):'—'}</div></div>
+        <div><div class="zone-stat-label">Ha/día prom.</div><div class="zone-stat-value">${nDays>0?(parseFloat(haEst)/nDays).toFixed(1):'—'}</div></div>
       </div>
     </div>`;
   });
