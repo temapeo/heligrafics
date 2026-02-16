@@ -731,11 +731,12 @@ function updateMetrics() {
   const parHa=parP.reduce((s,p)=>s+(p.SUP_HA||0),0);
   const parPredios=new Set(parP.map(p=>p.NOM_PREDIO||p.ID_PREDIO).filter(Boolean)).size;
   
-  // Pendiente (sin ningún vuelo)
-  const pendHa=totalHa-volHa-parHa;
+  // Superficie cubierta REAL: solo polígonos individuales con cobertura
+  // No incluir polígonos pendientes dentro de predios parciales
+  const cubiertaHa=polys.filter(p=>p._polyEstado==='VOLADO'||p._polyEstado==='PARCIAL')
+    .reduce((s,p)=>s+(p.SUP_HA||0),0);
   
-  // Avance considera volado + parcial (superficie efectivamente cubierta)
-  const cubiertaHa=volHa+parHa;
+  const pendHa=totalHa-cubiertaHa;
   const pct=totalHa>0?(cubiertaHa/totalHa*100):0;
   const dias=Math.ceil(pendHa/(P.rendHaDia*P.equipos));
   
@@ -759,8 +760,8 @@ function renderKMLProgressCards(){
   kmlFiles.forEach(f=>{
     const ps=f.polygons;
     const th=ps.reduce((s,p)=>s+(p.SUP_HA||0),0);
-    const vh=ps.filter(p=>p.ESTADO==='VOLADO').reduce((s,p)=>s+(p.SUP_HA||0),0);
-    const ph=ps.filter(p=>p.ESTADO==='PARCIAL').reduce((s,p)=>s+(p.SUP_HA||0),0);
+    const vh=ps.filter(p=>p._polyEstado==='VOLADO').reduce((s,p)=>s+(p.SUP_HA||0),0);
+    const ph=ps.filter(p=>p._polyEstado==='PARCIAL').reduce((s,p)=>s+(p.SUP_HA||0),0);
     const cubierta=vh+ph;
     const pct=th>0?(cubierta/th*100):0;
     const pctVol=th>0?(vh/th*100):0;
@@ -1100,7 +1101,7 @@ function renderEquipos(){
   let h='';
   
   // Total cubierta from Resumen
-  const totalCubierta = getAllPolygons().filter(p=>p.ESTADO==='VOLADO'||p.ESTADO==='PARCIAL').reduce((s,p)=>s+(p.SUP_HA||0),0);
+  const totalCubierta = getAllPolygons().filter(p=>p._polyEstado==='VOLADO'||p._polyEstado==='PARCIAL').reduce((s,p)=>s+(p.SUP_HA||0),0);
   
   // Summary cards per operator + total
   h+=`<div class="grid-3" style="margin-bottom:20px">`;
@@ -1128,7 +1129,6 @@ function renderEquipos(){
   h+=`<div class="card" style="display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center">
     <div style="font-size:13px;color:var(--text-dim);margin-bottom:8px">Superficie cubierta total</div>
     <div style="font-size:36px;font-weight:800;color:var(--accent)">${totalCubierta.toFixed(1)} ha</div>
-    <div style="font-size:11px;color:var(--text-muted);margin-top:8px">Polígonos compartidos se cuentan<br>para cada equipo por separado</div>
   </div>`;
   h+='</div>';
   

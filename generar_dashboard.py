@@ -549,35 +549,35 @@ def generate_dashboard(kml_data, mrk_data, all_polygons, operators, logo_b64):
             'dateAdded': datetime.now().strftime('%d/%m/%Y %H:%M')
         })
     
-    # Pre-compute operator stats using real polygon surfaces
-    # Logic: for each operator, sum the SUP_HA of all polygons where that operator has hits
-    # For daily: sum SUP_HA of polygons where that op+date has hits
-    # This is consistent with Resumen (cubierta = sum of polys with any hits)
+    # Pre-compute operator stats using per-POLYGON coverage
+    # Only count polygons where _polyEstado is VOLADO or PARCIAL (has actual coverage)
     
-    op_total_ha = defaultdict(float)       # op -> total ha of polygons touched
+    op_total_ha = defaultdict(float)       # op -> ha of covered polygons touched
     op_date_ha = defaultdict(lambda: defaultdict(float))  # op -> date -> ha
-    date_total_ha = defaultdict(float)     # date -> ha (unique polygons)
+    date_total_ha = defaultdict(float)     # date -> ha of unique covered polygons
     
     for p in all_polygons:
-        ha = p.get('SUP_HA', 0)
-        op_hits = p.get('_opHits', {})
-        op_date_hits = p.get('_opDateHits', {})
-        
-        if not op_hits:
+        # Only count polygons with actual coverage
+        poly_estado = p.get('_polyEstado', 'PENDIENTE')
+        if poly_estado == 'PENDIENTE':
             continue
         
-        # Each operator gets the full polygon ha if they have ANY hit there
-        for op in op_hits:
-            if op_hits[op] > 0:
+        ha = p.get('SUP_HA', 0)
+        
+        # Which operators touched this polygon
+        op_hits = p.get('_opHits', {})
+        for op, hits in op_hits.items():
+            if hits > 0:
                 op_total_ha[op] += ha
         
-        # Per date: each date gets the polygon if it has hits on that date
+        # Which dates touched this polygon
         date_hits = p.get('_dateHits', {})
-        for date in date_hits:
-            if date_hits[date] > 0:
+        for date, hits in date_hits.items():
+            if hits > 0:
                 date_total_ha[date] += ha
         
-        # Per op+date: operator gets polygon ha if they hit it on that date
+        # Which operator+date combos
+        op_date_hits = p.get('_opDateHits', {})
         for op, date_dict in op_date_hits.items():
             for date, hits in date_dict.items():
                 if hits > 0:
@@ -608,6 +608,16 @@ def generate_dashboard(kml_data, mrk_data, all_polygons, operators, logo_b64):
         }
     
     dashboard_data['dateStats'] = {date: round(ha, 1) for date, ha in date_total_ha.items()}
+    
+    # Diagnostic: verify totals
+    cubierta_real = sum(p.get('SUP_HA', 0) for p in all_polygons 
+                       if p.get('_polyEstado') in ('VOLADO', 'PARCIAL'))
+    print(f"\n   📊 Verificación Equipos (por polígono):")
+    for op in sorted(op_total_ha.keys()):
+        print(f"      {op}: {op_total_ha[op]:,.1f} ha")
+        for date in sorted(op_date_ha[op].keys()):
+            print(f"         {date}: {op_date_ha[op][date]:,.1f} ha")
+    print(f"      Cubierta real (por polígono): {cubierta_real:,.1f} ha")
     
     data_json = json.dumps(dashboard_data, ensure_ascii=False)
     data_size_mb = len(data_json.encode('utf-8')) / (1024 * 1024)
@@ -796,7 +806,14 @@ def main():
             n_pendiente = sum(1 for e in pred_estados.values() if e == 'PENDIENTE')
             volado_ha = sum(p.get('SUP_HA', 0) for p in all_polygons if p.get('ESTADO') == 'VOLADO')
             parcial_ha = sum(p.get('SUP_HA', 0) for p in all_polygons if p.get('ESTADO') == 'PARCIAL')
-            cubierta_ha = volado_ha + parcial_ha
+            
+            # Superficie cubierta REAL: solo polígonos individuales con cobertura
+            # No contar polígonos pendientes dentro de predios parciales
+            cubierta_ha = sum(p.get('SUP_HA', 0) for p in all_polygons 
+                             if p.get('_polyEstado') in ('VOLADO', 'PARCIAL'))
+            
+            # Para referencia: superficie de predios volados + parciales (más amplia)
+            predio_ha = volado_ha + parcial_ha
             
             # Coverage stats
             cov_polys = [p for p in all_polygons if p.get('_cobertura', 0) > 0]
@@ -807,7 +824,18 @@ def main():
             print(f"   🔶 {n_parcial} predios PARCIALES ({parcial_ha:,.1f} ha)")
             print(f"   🔴 {n_pendiente} predios PENDIENTES")
             print(f"   📐 Cobertura promedio (polígonos con datos): {avg_cov*100:.1f}%")
-            print(f"   📊 Superficie cubierta: {cubierta_ha:,.1f} / {total_ha:,.1f} ha ({cubierta_ha/total_ha*100:.1f}%)")
+            
+            # Desglose por _polyEstado (individual)
+            n_poly_volado = sum(1 for p in all_polygons if p.get('_polyEstado') == 'VOLADO')
+            n_poly_parcial = sum(1 for p in all_polygons if p.get('_polyEstado') == 'PARCIAL')
+            poly_volado_ha = sum(p.get('SUP_HA', 0) for p in all_polygons if p.get('_polyEstado') == 'VOLADO')
+            poly_parcial_ha = sum(p.get('SUP_HA', 0) for p in all_polygons if p.get('_polyEstado') == 'PARCIAL')
+            
+            print(f"\n   📊 POLÍGONOS INDIVIDUALES:")
+            print(f"      ✅ {n_poly_volado} polígonos volados ({poly_volado_ha:,.1f} ha)")
+            print(f"      🔶 {n_poly_parcial} polígonos parciales ({poly_parcial_ha:,.1f} ha)")
+            print(f"      📊 Superficie cubierta real: {cubierta_ha:,.1f} ha ({cubierta_ha/total_ha*100:.1f}%)")
+            print(f"      ℹ️  Superficie predios (vol+parc): {predio_ha:,.1f} ha")
             
             # Diagnóstico: predios PARCIALES (qué les falta)
             parcial_predios = {}
