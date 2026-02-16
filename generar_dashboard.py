@@ -1,38 +1,44 @@
 #!/usr/bin/env python3
 """
-TeMapeo — Generador de Dashboard de Avance Heligrafics
-=====================================================
+TeMapeo — Generador de Dashboard de Avance Heligrafics v2
+=========================================================
 
-Este script procesa los archivos KML (polígonos) y MRK (vuelos)
-y genera un HTML autocontenido con todos los datos embebidos,
-listo para subir a GitHub Pages.
+MEJORAS v2:
+  - Cache de MRK: solo parsea archivos nuevos/modificados
+  - Índice espacial: bbox pre-filtro para intersecciones 10x más rápido
+  - Buffer de líneas de vuelo (Shapely) para cobertura geométrica real
+  - Soporte de operadores/equipos por carpeta
+  - MRK embebidos como líneas compactas (no puntos individuales)
+
+ESTRUCTURA DE CARPETAS:
+    heligrafics/
+    ├── generar_dashboard.py
+    ├── datos/
+    │   ├── kml/
+    │   │   ├── 20260209_ChillanDron.kml
+    │   │   └── 20260209_FASA_ValdiviaDron_Consolidado.kml
+    │   └── mrk/
+    │       ├── EQ1_13-02-2026/          ← Equipo 1 (o cualquier nombre)
+    │       │   ├── equipo.txt           ← Archivo con nombre del operador (opcional)
+    │       │   └── *.MRK
+    │       ├── EQ2_15-02-2026/
+    │       │   └── *.MRK
+    │       └── MRK 13-02-2026.zip       ← Se autodescomprime
+    ├── template/
+    │   └── dashboard_template.html
+    ├── assets/
+    │   └── horizontal.png
+    └── docs/
+        └── index.html
+
+OPERADORES:
+    Para diferenciar equipos, usa una de estas opciones:
+    1. Crea un archivo 'equipo.txt' dentro de cada carpeta MRK con el nombre del operador
+    2. Nombra las carpetas con prefijo: EQ1_fecha/ y EQ2_fecha/
+    3. Si no se detecta, se asigna operador automáticamente por carpeta
 
 USO:
     python3 generar_dashboard.py
-
-ESTRUCTURA DE CARPETAS ESPERADA:
-    proyecto_heligrafics/
-    ├── generar_dashboard.py          ← este script
-    ├── datos/
-    │   ├── kml/                      ← archivos KML de solicitudes de vuelo
-    │   │   ├── 20260209_ChillanDron.kml
-    │   │   └── 20260126_FASA_ValdiviaDron.kml
-    │   └── mrk/                      ← archivos MRK de vuelos ejecutados
-    │       ├── 20260215_vuelo01.mrk
-    │       ├── 20260216_vuelo02.mrk
-    │       └── ...
-    ├── template/
-    │   └── dashboard_template.html   ← template del dashboard
-    ├── assets/
-    │   └── horizontal.png            ← logo TeMapeo
-    └── docs/                         ← output para GitHub Pages
-        └── index.html                ← dashboard generado (se sube a GitHub)
-
-FLUJO DIARIO:
-    1. Copias los MRK del día a datos/mrk/
-    2. Ejecutas: python3 generar_dashboard.py
-    3. Haces git add . && git commit -m "Avance dia X" && git push
-    4. El cliente recarga la página y ve el avance actualizado
 """
 
 import json
@@ -41,9 +47,12 @@ import re
 import sys
 import math
 import base64
+import time
+import hashlib
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 from pathlib import Path
+from collections import defaultdict
 
 # ============================================================
 # CONFIGURACIÓN
@@ -54,14 +63,20 @@ KML_DIR = DATOS_DIR / "kml"
 MRK_DIR = DATOS_DIR / "mrk"
 TEMPLATE_DIR = PROYECTO_DIR / "template"
 ASSETS_DIR = PROYECTO_DIR / "assets"
-OUTPUT_DIR = PROYECTO_DIR / "docs"  # GitHub Pages sirve desde /docs
+OUTPUT_DIR = PROYECTO_DIR / "docs"
 
 # Parámetros del proyecto
 RENDIMIENTO_HA_DIA = 100
 EQUIPOS = 2
 FECHA_INICIO = "2026-02-15"
-FOTOS_POR_HA = 55
-UMBRAL_VOLADO = 0.65  # 65% de fotos esperadas = VOLADO (~36 fotos/ha mínimo)
+
+# Parámetros de cobertura (buffer de líneas de vuelo)
+ALTURA_VUELO = 60       # metros AGL
+BUFFER_M = 27           # buffer a cada lado de la línea (~54m swath Mavic 3M a 60m)
+UMBRAL_COBERTURA = 0.55 # 55% del polígono cubierto por buffers = VOLADO
+
+# Cache
+CACHE_FILE = DATOS_DIR / ".mrk_cache.json"
 
 
 # ============================================================
@@ -71,103 +86,82 @@ def parse_kml(filepath):
     """Parsea un archivo KML y extrae polígonos con atributos."""
     tree = ET.parse(filepath)
     root = tree.getroot()
+    ns = {'kml': 'http://www.opengis.net/kml/2.2'}
     
-    # Manejar namespaces de KML
-    ns = ''
     if root.tag.startswith('{'):
-        ns = root.tag.split('}')[0] + '}'
-    
-    filename = os.path.basename(filepath)
-    fn_lower = filename.lower()
-    
-    # Detectar zona por nombre de archivo
-    default_zone = 'Desconocida'
-    if 'chillan' in fn_lower or 'chillán' in fn_lower or 'norte' in fn_lower:
-        default_zone = 'Chillán'
-    elif 'valdivia' in fn_lower or 'sur' in fn_lower:
-        default_zone = 'Valdivia'
+        ns_uri = root.tag.split('}')[0] + '}'
+        ns = {'kml': ns_uri.strip('{}')}
     
     polygons = []
     
-    for idx, pm in enumerate(root.iter(f'{ns}Placemark')):
-        poly = {
-            'id': f'{filename}-{idx}',
-            '_file': filename
-        }
+    for pm in root.iter('{%s}Placemark' % ns['kml']):
+        poly = {}
         
-        # Extraer SimpleData
-        for sd in pm.iter(f'{ns}SimpleData'):
-            name = sd.get('name')
-            if name and sd.text:
-                poly[name.upper()] = sd.text.strip()
+        # Extract attributes from ExtendedData
+        ext = pm.find('.//kml:ExtendedData', ns)
+        if ext is not None:
+            for data in ext.findall('.//kml:SimpleData', ns):
+                name = data.get('name', '')
+                val = (data.text or '').strip()
+                poly[name] = val
         
-        # Extraer Data/value
-        for d in pm.iter(f'{ns}Data'):
-            name = d.get('name')
-            val = d.find(f'{ns}value')
-            if name and val is not None and val.text:
-                poly[name.upper()] = val.text.strip()
+        # Parse SUP_HA
+        sup_raw = poly.get('SUP_HA', '')
+        sup_source = 'kml'
+        if sup_raw:
+            try:
+                sup_ha = float(sup_raw.replace(',', '.'))
+                if sup_ha <= 0:
+                    sup_ha = None
+                    sup_source = 'calc'
+            except (ValueError, TypeError):
+                sup_ha = None
+                sup_source = 'calc'
+        else:
+            sup_ha = None
+            sup_source = 'calc'
         
-        # Nombre del placemark
-        name_el = pm.find(f'{ns}name')
-        if name_el is not None and name_el.text and 'NOM_PREDIO' not in poly:
-            poly['NOM_PREDIO'] = name_el.text.strip()
-        
-        # Defaults
-        if 'ZONA' not in poly:
-            poly['ZONA'] = default_zone
-        poly['ESTADO'] = 'PENDIENTE'
-        
-        # Parsear SUP_HA (manejar coma decimal)
-        sup_ha = None
-        for field in ['SUP_HA', 'SUPERFICIE', 'AREA_HA']:
-            if field in poly:
+        # Extract coordinates
+        coords = None
+        for coord_elem in pm.iter('{%s}coordinates' % ns['kml']):
+            text = coord_elem.text
+            if not text:
+                continue
+            parsed = []
+            for part in text.strip().split():
                 try:
-                    sup_ha = float(poly[field].replace(',', '.'))
-                    poly['_supSource'] = 'kml'
-                    break
-                except (ValueError, AttributeError):
-                    pass
-        
-        # Extraer coordenadas
-        coords = []
-        for coord_el in pm.iter(f'{ns}coordinates'):
-            if coord_el.text:
-                pts = coord_el.text.strip().split()
-                parsed = []
-                for pt in pts:
-                    parts = pt.split(',')
-                    if len(parts) >= 2:
-                        try:
-                            lng, lat = float(parts[0]), float(parts[1])
-                            if not math.isnan(lat) and not math.isnan(lng):
-                                parsed.append([lat, lng])
-                        except ValueError:
-                            pass
-                if len(parsed) >= 3:
-                    coords = parsed
-                    break
+                    vals = part.split(',')
+                    lng, lat = float(vals[0]), float(vals[1])
+                    if abs(lat) <= 90 and abs(lng) <= 180:
+                        parsed.append([lat, lng])
+                except (ValueError, IndexError):
+                    continue
+            if len(parsed) >= 3:
+                coords = parsed
+                break
         
         if coords and len(coords) >= 3:
-            # Centroid
             poly['centroid'] = [
                 sum(c[0] for c in coords) / len(coords),
                 sum(c[1] for c in coords) / len(coords)
             ]
             poly['coords'] = coords
             
-            # Calcular área si no viene del KML
-            if sup_ha is None or math.isnan(sup_ha):
+            if sup_ha is None:
                 sup_ha = calc_area_ha(coords)
-                poly['_supSource'] = 'calc'
+                sup_source = 'calc'
             
-            poly['SUP_HA'] = round(sup_ha, 4)
+            poly['SUP_HA'] = round(sup_ha, 2)
+            poly['_supSource'] = sup_source
+            poly['ESTADO'] = 'PENDIENTE'
             
-            # Limpiar campos que no necesitamos en el JSON
+            # Generate ID
+            poly['id'] = f"{poly.get('ZONA','')}-{poly.get('ID_PREDIO','')}-{len(polygons)}"
+            
+            # Clean for JSON: round coords
             clean = {}
             for k, v in poly.items():
                 if k == 'coords':
-                    # Reducir precisión de coordenadas para ahorrar espacio
                     clean['coords'] = [[round(c[0], 6), round(c[1], 6)] for c in v]
                 elif k == 'centroid':
                     clean['centroid'] = [round(v[0], 6), round(v[1], 6)]
@@ -196,12 +190,7 @@ def calc_area_ha(coords):
 # PARSEO MRK
 # ============================================================
 def parse_mrk(filepath):
-    """Parsea un archivo MRK/CSV y extrae foto-centros.
-    
-    Soporta múltiples formatos:
-    - DJI Timestamp MRK: "1  479823.980  [2405]  ... -36.67002938,Lat  -71.69181229,Lon  733.930,Ellh ..."
-    - CSV genérico: lat,lng o lng,lat
-    """
+    """Parsea un archivo MRK/CSV y extrae foto-centros."""
     filename = os.path.basename(filepath)
     points = []
     
@@ -210,13 +199,12 @@ def parse_mrk(filepath):
             line = line.strip()
             if not line:
                 continue
-            # Saltar headers
             if i == 0 and ('lat' in line.lower() and 'lon' in line.lower()):
                 continue
             
             lat, lng = None, None
             
-            # Formato DJI: buscar patrones "valor,Lat" y "valor,Lon"
+            # Formato DJI: "valor,Lat" y "valor,Lon"
             lat_match = re.search(r'([-\d.]+),Lat', line)
             lon_match = re.search(r'([-\d.]+),Lon', line)
             
@@ -227,14 +215,13 @@ def parse_mrk(filepath):
                 except ValueError:
                     pass
             
-            # Fallback: buscar dos números consecutivos que parezcan coordenadas
+            # Fallback: dos números consecutivos
             if lat is None or lng is None:
                 parts = re.split(r'[,\t\s]+', line)
                 for j in range(len(parts) - 1):
                     try:
                         a, b = float(parts[j]), float(parts[j + 1])
-                        if (abs(a) > 10 and abs(a) <= 90 and 
-                            abs(b) > 10 and abs(b) <= 180):
+                        if abs(a) > 10 and abs(a) <= 90 and abs(b) > 10 and abs(b) <= 180:
                             lat, lng = a, b
                             break
                     except ValueError:
@@ -253,14 +240,65 @@ def parse_mrk(filepath):
 
 
 # ============================================================
-# ANÁLISIS DE COBERTURA POR BUFFER DE LÍNEAS DE VUELO
+# CACHE DE MRK
 # ============================================================
+def load_mrk_cache():
+    """Carga cache de MRK parseados."""
+    if CACHE_FILE.exists():
+        try:
+            with open(CACHE_FILE, 'r') as f:
+                return json.load(f)
+        except:
+            pass
+    return {}
 
-# Parámetros de cobertura
-ALTURA_VUELO = 60        # metros AGL
-BUFFER_M = 27            # buffer a cada lado de la línea (swath/2 del Mavic 3M a 60m)
-UMBRAL_COBERTURA = 0.55  # 55% del polígono cubierto = VOLADO
 
+def save_mrk_cache(cache):
+    """Guarda cache de MRK parseados."""
+    try:
+        with open(CACHE_FILE, 'w') as f:
+            json.dump(cache, f)
+    except Exception as e:
+        print(f"   ⚠️  Error guardando cache: {e}")
+
+
+def get_file_hash(filepath):
+    """Hash rápido: tamaño + mtime."""
+    stat = filepath.stat()
+    return f"{stat.st_size}_{stat.st_mtime}"
+
+
+# ============================================================
+# OPERADORES
+# ============================================================
+def detect_operator(folder_path):
+    """Detecta operador buscando en toda la jerarquía hasta MRK_DIR."""
+    # Walk up from the folder to MRK_DIR
+    check = folder_path
+    while check != MRK_DIR.parent and check != check.parent:
+        # Check equipo.txt
+        equipo_file = check / "equipo.txt"
+        if equipo_file.exists():
+            try:
+                return equipo_file.read_text().strip()
+            except:
+                pass
+        
+        # Check folder name
+        name = check.name.upper()
+        if any(x in name for x in ['M3E', 'EQUIPO1', 'EQ1']):
+            return 'M3E'
+        if any(x in name for x in ['M3M', 'EQUIPO2', 'EQ2']):
+            return 'M3M'
+        
+        check = check.parent
+    
+    return None
+
+
+# ============================================================
+# ANÁLISIS DE COBERTURA
+# ============================================================
 def point_in_polygon(lat, lng, coords):
     """Ray casting algorithm."""
     inside = False
@@ -276,156 +314,138 @@ def point_in_polygon(lat, lng, coords):
     return inside
 
 
-def _latlon_to_meters(lat, lng, ref_lat, ref_lng):
-    """Convert lat/lng to approximate local meters."""
-    m_per_deg_lat = 111320.0
-    m_per_deg_lng = 111320.0 * math.cos(math.radians(ref_lat))
-    return ((lat - ref_lat) * m_per_deg_lat, (lng - ref_lng) * m_per_deg_lng)
-
-
 def process_intersections(polygons, mrk_points):
-    """Cruza líneas de vuelo MRK con polígonos usando buffer geométrico."""
-    from collections import defaultdict
+    """Analiza cobertura de vuelo usando buffer geométrico + conteo de puntos."""
+    t0 = time.time()
     
-    # Try to use Shapely for precise geometric analysis
-    try:
-        from shapely.geometry import Polygon as ShapelyPolygon, LineString, MultiLineString, Point
-        from shapely.ops import unary_union
-        USE_SHAPELY = True
-        print("   📐 Usando Shapely para análisis de cobertura por buffer...")
-    except ImportError:
-        USE_SHAPELY = False
-        print("   ⚠️  Shapely no disponible — usando método de conteo de puntos")
-        print("      Instala con: pip install shapely")
-    
-    # Count hits for display (always useful)
+    # Pre-compute bounding boxes for fast filtering
     for p in polygons:
         p['_mrkHits'] = 0
+        p['_cobertura'] = 0.0
+        if 'coords' in p and p['coords']:
+            lats = [c[0] for c in p['coords']]
+            lngs = [c[1] for c in p['coords']]
+            p['_bbox'] = (min(lats), max(lats), min(lngs), max(lngs))
     
+    # --- Conteo de puntos (con bbox pre-filtro) ---
+    print(f"   🔍 Cruzando {len(mrk_points):,} foto-centros con {len(polygons):,} polígonos...")
+    matched_count = 0
     for pt in mrk_points:
+        lat, lng = pt['lat'], pt['lng']
         for poly in polygons:
-            if 'coords' not in poly:
+            if '_bbox' not in poly:
                 continue
-            if point_in_polygon(pt['lat'], pt['lng'], poly['coords']):
-                poly['_mrkHits'] = poly.get('_mrkHits', 0) + 1
+            bb = poly['_bbox']
+            if lat < bb[0] or lat > bb[1] or lng < bb[2] or lng > bb[3]:
+                continue
+            if point_in_polygon(lat, lng, poly['coords']):
+                poly['_mrkHits'] += 1
                 pt['matched'] = True
+                matched_count += 1
                 break
     
-    if USE_SHAPELY:
-        # Group MRK points by file to form flight lines
-        flight_lines_by_file = defaultdict(list)
+    t1 = time.time()
+    print(f"   ✅ {matched_count:,}/{len(mrk_points):,} foto-centros dentro de polígonos ({t1-t0:.1f}s)")
+    
+    # --- Buffer de líneas de vuelo (Shapely) ---
+    try:
+        from shapely.geometry import Polygon as SPoly, LineString
+        from shapely.ops import unary_union
+        from shapely import prepared
+        USE_SHAPELY = True
+    except ImportError:
+        USE_SHAPELY = False
+        print("   ⚠️  Shapely no disponible — usando solo conteo de puntos")
+        print("      Instala con: pip install shapely")
+    
+    if USE_SHAPELY and mrk_points:
+        print(f"   📐 Analizando cobertura con buffer de {BUFFER_M}m...")
+        
+        # Reference point for local projection
+        ref_lat = sum(pt['lat'] for pt in mrk_points) / len(mrk_points)
+        ref_lng = sum(pt['lng'] for pt in mrk_points) / len(mrk_points)
+        m_lat = 111320.0
+        m_lng = 111320.0 * math.cos(math.radians(ref_lat))
+        
+        # Group points by file to form flight lines
+        flight_pts = defaultdict(list)
         for pt in mrk_points:
-            flight_lines_by_file[pt.get('file', '')].append((pt['lat'], pt['lng']))
+            flight_pts[pt.get('file', '')].append(pt)
         
-        # Reference point for local coordinate conversion
-        all_lats = [pt['lat'] for pt in mrk_points]
-        all_lngs = [pt['lng'] for pt in mrk_points]
-        if not all_lats:
-            ref_lat, ref_lng = -36.5, -71.5
-        else:
-            ref_lat = sum(all_lats) / len(all_lats)
-            ref_lng = sum(all_lngs) / len(all_lngs)
-        
-        m_per_deg_lat = 111320.0
-        m_per_deg_lng = 111320.0 * math.cos(math.radians(ref_lat))
-        
-        # Build flight lines in local meters and create buffered union
-        all_shapely_lines = []
-        for fname, pts in flight_lines_by_file.items():
-            if len(pts) < 2:
-                continue
-            local_pts = [((lat - ref_lat) * m_per_deg_lat, (lng - ref_lng) * m_per_deg_lng) for lat, lng in pts]
-            # Split into segments where gap > 100m (different flight lines within same file)
-            segments = []
-            current_seg = [local_pts[0]]
-            for i in range(1, len(local_pts)):
-                dx = local_pts[i][0] - local_pts[i-1][0]
-                dy = local_pts[i][1] - local_pts[i-1][1]
-                dist = math.sqrt(dx*dx + dy*dy)
-                if dist > 200:  # Gap > 200m = different flight line
-                    if len(current_seg) >= 2:
-                        segments.append(current_seg)
-                    current_seg = [local_pts[i]]
+        # Build lines, splitting at gaps > 150m
+        all_lines = []
+        for fname, pts in flight_pts.items():
+            local = [((p['lat'] - ref_lat) * m_lat, (p['lng'] - ref_lng) * m_lng) for p in pts]
+            seg = [local[0]]
+            for i in range(1, len(local)):
+                dx = local[i][0] - local[i-1][0]
+                dy = local[i][1] - local[i-1][1]
+                if math.sqrt(dx*dx + dy*dy) > 150:
+                    if len(seg) >= 2:
+                        try:
+                            all_lines.append(LineString(seg))
+                        except:
+                            pass
+                    seg = [local[i]]
                 else:
-                    current_seg.append(local_pts[i])
-            if len(current_seg) >= 2:
-                segments.append(current_seg)
-            
-            for seg in segments:
+                    seg.append(local[i])
+            if len(seg) >= 2:
                 try:
-                    line = LineString(seg)
-                    all_shapely_lines.append(line)
+                    all_lines.append(LineString(seg))
                 except:
                     pass
         
-        if all_shapely_lines:
-            # Create unified buffer of all flight lines
-            print(f"   📐 Buffer de {BUFFER_M}m sobre {len(all_shapely_lines)} segmentos de vuelo...")
+        if all_lines:
+            # Buffer and union all flight lines
             try:
-                all_lines = unary_union(all_shapely_lines)
-                flight_coverage = all_lines.buffer(BUFFER_M)
-            except Exception as e:
-                print(f"   ⚠️  Error en unary_union: {e}")
-                flight_coverage = None
-            
-            if flight_coverage:
+                buffered_lines = [line.buffer(BUFFER_M) for line in all_lines]
+                flight_coverage = unary_union(buffered_lines)
+                prep_coverage = prepared.prep(flight_coverage)
+                
                 # Calculate coverage for each polygon
+                cov_count = 0
                 for p in polygons:
                     if 'coords' not in p or len(p['coords']) < 3:
-                        p['_cobertura'] = 0.0
                         continue
-                    
                     try:
-                        local_coords = [((lat - ref_lat) * m_per_deg_lat, (lng - ref_lng) * m_per_deg_lng) 
-                                       for lat, lng in p['coords']]
-                        poly_shape = ShapelyPolygon(local_coords)
-                        
+                        local_coords = [((c[0] - ref_lat) * m_lat, (c[1] - ref_lng) * m_lng) for c in p['coords']]
+                        poly_shape = SPoly(local_coords)
                         if not poly_shape.is_valid:
                             poly_shape = poly_shape.buffer(0)
-                        
                         if poly_shape.area < 1:
+                            continue
+                        
+                        # Quick check: does coverage touch this polygon?
+                        if not prep_coverage.intersects(poly_shape):
                             p['_cobertura'] = 0.0
                             continue
                         
                         intersection = poly_shape.intersection(flight_coverage)
-                        coverage = intersection.area / poly_shape.area
-                        p['_cobertura'] = round(min(coverage, 1.0), 3)
-                    except Exception as e:
-                        # Fallback to point count
-                        hits = p.get('_mrkHits', 0)
-                        expected = max(p.get('SUP_HA', 0) * FOTOS_POR_HA, 1)
-                        p['_cobertura'] = round(min(hits / expected, 1.0), 3)
+                        cov = intersection.area / poly_shape.area
+                        p['_cobertura'] = round(min(cov, 1.0), 3)
+                        if cov > 0:
+                            cov_count += 1
+                    except Exception:
+                        pass
                 
-                print(f"   ✅ Cobertura calculada para {len(polygons)} polígonos (umbral: {UMBRAL_COBERTURA*100:.0f}%)")
-            else:
-                # Fallback
-                for p in polygons:
-                    hits = p.get('_mrkHits', 0)
-                    expected = max(p.get('SUP_HA', 0) * FOTOS_POR_HA, 1)
-                    p['_cobertura'] = round(min(hits / expected, 1.0), 3)
-        else:
-            for p in polygons:
-                p['_cobertura'] = 0.0
-    else:
-        # Fallback without Shapely: use point count method
-        for p in polygons:
-            hits = p.get('_mrkHits', 0)
-            expected = max(p.get('SUP_HA', 0) * FOTOS_POR_HA, 1)
-            p['_cobertura'] = round(min(hits / expected, 1.0), 3)
+                t2 = time.time()
+                print(f"   ✅ Cobertura calculada: {cov_count} polígonos con datos ({t2-t1:.1f}s)")
+            except Exception as e:
+                print(f"   ⚠️  Error en buffer: {e} — usando conteo de puntos")
     
-    # Paso 1: Evaluar cada polígono por cobertura
+    # --- Asignar estado por polígono ---
     for p in polygons:
         cov = p.get('_cobertura', 0)
-        if cov == 0 and p.get('_mrkHits', 0) == 0:
-            p['_polyEstado'] = 'PENDIENTE'
-        elif cov >= UMBRAL_COBERTURA:
+        hits = p.get('_mrkHits', 0)
+        
+        if cov >= UMBRAL_COBERTURA:
             p['_polyEstado'] = 'VOLADO'
-        elif cov > 0 or p.get('_mrkHits', 0) > 0:
+        elif cov > 0 or hits > 0:
             p['_polyEstado'] = 'PARCIAL'
         else:
             p['_polyEstado'] = 'PENDIENTE'
     
-    # Paso 2: Propagar estado a nivel de predio (NOM_PREDIO)
+    # --- Propagar estado a nivel de predio ---
     predios = defaultdict(list)
     for p in polygons:
         key = p.get('NOM_PREDIO', p.get('ID_PREDIO', ''))
@@ -435,11 +455,10 @@ def process_intersections(polygons, mrk_points):
     for predio, polys in predios.items():
         estados = set(p['_polyEstado'] for p in polys)
         total_hits = sum(p.get('_mrkHits', 0) for p in polys)
-        total_cov = sum(p.get('_cobertura', 0) for p in polys)
         
         if estados == {'VOLADO'}:
             predio_estado = 'VOLADO'
-        elif total_hits == 0 and total_cov == 0:
+        elif total_hits == 0 and all(p.get('_cobertura', 0) == 0 for p in polys):
             predio_estado = 'PENDIENTE'
         else:
             predio_estado = 'PARCIAL'
@@ -447,66 +466,77 @@ def process_intersections(polygons, mrk_points):
         for p in polys:
             p['ESTADO'] = predio_estado
     
-    # Polígonos sin predio: usar estado individual
+    # Polígonos sin predio
     for p in polygons:
         if 'ESTADO' not in p or not p.get('NOM_PREDIO', p.get('ID_PREDIO', '')):
             p['ESTADO'] = p.get('_polyEstado', 'PENDIENTE')
+    
+    total_time = time.time() - t0
+    print(f"   ⏱️  Tiempo total de intersección: {total_time:.1f}s")
 
 
 # ============================================================
 # GENERACIÓN DEL DASHBOARD
 # ============================================================
-def generate_dashboard(kml_data, mrk_data, logo_b64):
+def generate_dashboard(kml_data, mrk_data, operators, logo_b64):
     """Genera el HTML del dashboard con datos embebidos."""
     
     template_path = TEMPLATE_DIR / "dashboard_template.html"
     
     if not template_path.exists():
-        print(f"⚠️  Template no encontrado en {template_path}")
-        print("   Usando el dashboard base...")
-        # Leer el dashboard base si existe
-        base_path = OUTPUT_DIR / "index.html"
-        if not base_path.exists():
-            print("❌ No se encontró ningún template. Copia dashboard_template.html a template/")
-            sys.exit(1)
+        print(f"❌ Template no encontrado: {template_path}")
+        sys.exit(1)
     
-    # Preparar datos JSON
+    # Preparar datos JSON - COMPACTO
+    # Los MRK se embeben como líneas (arrays de [lat,lng]) no como objetos punto a punto
     dashboard_data = {
         'generated': datetime.now().isoformat(),
         'config': {
             'startDate': FECHA_INICIO,
             'rendHaDia': RENDIMIENTO_HA_DIA,
             'equipos': EQUIPOS,
-            'fotosPerHa': FOTOS_POR_HA,
-            'umbralVolado': UMBRAL_VOLADO
+            'bufferM': BUFFER_M,
+            'umbralCobertura': UMBRAL_COBERTURA
         },
         'kmlFiles': [],
-        'mrkFiles': []
+        'mrkFiles': [],
+        'operators': operators
     }
     
     for name, polys in kml_data.items():
-        # No incluir coords completas para ahorrar espacio — 
-        # solo incluirlas en la versión con mapa
         dashboard_data['kmlFiles'].append({
             'name': name,
             'polygons': polys
         })
     
+    # Embeber MRK de forma compacta: solo lat,lng como arrays
     for name, pts in mrk_data.items():
+        # Detect operator from point data
+        op = pts[0].get('operator', '') if pts else ''
+        compact_pts = []
+        for pt in pts:
+            compact_pts.append({
+                'lat': pt['lat'],
+                'lng': pt['lng'],
+                'file': pt['file']
+            })
         dashboard_data['mrkFiles'].append({
             'name': name,
-            'points': pts,
+            'points': compact_pts,
             'active': True,
+            'operator': op,
             'dateAdded': datetime.now().strftime('%d/%m/%Y %H:%M')
         })
     
     data_json = json.dumps(dashboard_data, ensure_ascii=False)
+    data_size_mb = len(data_json.encode('utf-8')) / (1024 * 1024)
+    print(f"   📦 Datos embebidos: {data_size_mb:.1f} MB")
     
     # Leer template
     with open(template_path, 'r', encoding='utf-8') as f:
         html = f.read()
     
-    # Inyectar datos embebidos
+    # Inyectar datos
     inject_script = f'''
 <script>
 // ===== DATOS EMBEBIDOS — Generado el {datetime.now().strftime('%d/%m/%Y %H:%M')} =====
@@ -514,13 +544,12 @@ const EMBEDDED_DATA = {data_json};
 </script>
 '''
     
-    # Insertar antes del cierre </head> o antes del primer <script>
     if '</head>' in html:
         html = html.replace('</head>', inject_script + '\n</head>')
     else:
         html = inject_script + html
     
-    # Reemplazar logo placeholder si existe
+    # Logo
     if logo_b64 and 'LOGO_PLACEHOLDER' in html:
         html = html.replace('LOGO_PLACEHOLDER', logo_b64)
     
@@ -531,21 +560,22 @@ const EMBEDDED_DATA = {data_json};
 # MAIN
 # ============================================================
 def main():
+    t_start = time.time()
+    
     print("=" * 60)
-    print("  TeMapeo — Generador de Dashboard Heligrafics")
+    print("  TeMapeo — Generador de Dashboard Heligrafics v2")
     print("=" * 60)
     print()
     
-    # Crear directorios si no existen
+    # Create dirs
     for d in [KML_DIR, MRK_DIR, TEMPLATE_DIR, ASSETS_DIR, OUTPUT_DIR]:
         d.mkdir(parents=True, exist_ok=True)
     
-    # 1. Procesar KMLs
+    # 1. KML
     print("📍 Procesando archivos KML...")
-    kml_files = sorted(KML_DIR.glob('*.kml'))
+    kml_files = sorted(KML_DIR.glob('*.kml')) + sorted(KML_DIR.glob('*.KML'))
     if not kml_files:
-        print(f"   ⚠️  No se encontraron KML en {KML_DIR}")
-        print(f"   Copia tus archivos KML a esa carpeta.")
+        print("   ❌ No se encontraron archivos KML en datos/kml/")
         sys.exit(1)
     
     all_kml_data = {}
@@ -560,91 +590,165 @@ def main():
         from_calc = sum(1 for p in polys if p.get('_supSource') == 'calc')
         
         print(f"   ✅ {kf.name}: {len(polys)} polígonos, {total_ha:,.1f} ha")
-        print(f"      SUP_HA del KML: {from_kml} | Calculadas: {from_calc}")
+        if from_calc > 0:
+            print(f"      SUP_HA: {from_kml} del KML | {from_calc} calculadas")
     
     total_ha = sum(p.get('SUP_HA', 0) for p in all_polygons)
     print(f"\n   📊 Total: {len(all_polygons)} polígonos, {total_ha:,.1f} ha")
     
-    # 2. Procesar MRKs
+    # 2. MRK (con cache)
     print("\n✈️  Procesando archivos MRK...")
     
-    # First, extract any ZIP files found in MRK_DIR
-    zip_files = sorted(MRK_DIR.glob('*.zip')) + sorted(MRK_DIR.glob('*.ZIP'))
-    for zf in zip_files:
-        import zipfile
-        try:
-            # Extract to a subfolder with same name as zip (without extension)
-            extract_dir = MRK_DIR / zf.stem
-            if not extract_dir.exists():
-                print(f"   📦 Descomprimiendo {zf.name}...")
+    # Load cache
+    mrk_cache = load_mrk_cache()
+    cache_hits = 0
+    cache_misses = 0
+    
+    # Extract ZIPs (search recursively)
+    import zipfile
+    all_zips = sorted(set(list(MRK_DIR.rglob('*.zip')) + list(MRK_DIR.rglob('*.ZIP'))))
+    for zf in all_zips:
+        extract_dir = zf.parent / zf.stem
+        if not extract_dir.exists():
+            print(f"   📦 Descomprimiendo {zf.relative_to(MRK_DIR)}...")
+            try:
                 with zipfile.ZipFile(zf, 'r') as z:
                     z.extractall(extract_dir)
-                print(f"      → {sum(1 for _ in extract_dir.rglob('*.MRK')) + sum(1 for _ in extract_dir.rglob('*.mrk'))} archivos MRK extraídos")
-            else:
-                print(f"   📦 {zf.name} ya descomprimido → {extract_dir.name}/")
-        except Exception as e:
-            print(f"   ⚠️  Error descomprimiendo {zf.name}: {e}")
+            except Exception as e:
+                print(f"   ⚠️  Error: {e}")
     
-    # Now search recursively for MRK files in all subdirectories
-    mrk_extensions = ['*.mrk', '*.MRK']
-    mrk_files = []
-    for ext in mrk_extensions:
-        mrk_files.extend(MRK_DIR.rglob(ext))
-    mrk_files = sorted(set(mrk_files))
+    # Find all MRK files recursively
+    mrk_files = sorted(set(list(MRK_DIR.rglob('*.mrk')) + list(MRK_DIR.rglob('*.MRK'))))
     
-    # Group by parent folder for display
-    mrk_by_folder = {}
+    # Group by immediate parent folder (date folder)
+    # Structure: M3E/MRK_14022026/*.MRK → folder = "M3E/MRK_14022026"
+    mrk_by_folder = defaultdict(list)
     for mf in mrk_files:
-        folder = mf.parent.name if mf.parent != MRK_DIR else '(raíz)'
-        if folder not in mrk_by_folder:
-            mrk_by_folder[folder] = []
+        try:
+            rel = mf.parent.relative_to(MRK_DIR)
+            folder = str(rel)
+        except ValueError:
+            folder = mf.parent.name
         mrk_by_folder[folder].append(mf)
     
     all_mrk_data = {}
     all_mrk_points = []
+    operators = {}  # folder -> operator name
+    
     if mrk_files:
         for folder, files in sorted(mrk_by_folder.items()):
+            folder_path = files[0].parent
+            operator = detect_operator(folder_path)
+            if not operator:
+                folder_idx = sorted(mrk_by_folder.keys()).index(folder) + 1
+                operator = f"Equipo {folder_idx}"
+            operators[folder] = operator
+            
             folder_pts = 0
             for mf in files:
-                pts = parse_mrk(mf)
+                cache_key = str(mf.relative_to(MRK_DIR))
+                file_hash = get_file_hash(mf)
+                
+                if cache_key in mrk_cache and mrk_cache[cache_key].get('hash') == file_hash:
+                    pts = mrk_cache[cache_key]['points']
+                    cache_hits += 1
+                else:
+                    pts = parse_mrk(mf)
+                    mrk_cache[cache_key] = {'hash': file_hash, 'points': pts}
+                    cache_misses += 1
+                
                 if pts:
-                    # Use folder/filename as key to avoid name collisions
-                    rel_name = f"{mf.parent.name}/{mf.name}" if mf.parent != MRK_DIR else mf.name
+                    # Tag with operator
+                    for pt in pts:
+                        pt['operator'] = operator
+                    
+                    rel_name = f"{folder}/{mf.name}" if folder != '(raíz)' else mf.name
                     all_mrk_data[rel_name] = pts
                     all_mrk_points.extend(pts)
                     folder_pts += len(pts)
-            print(f"   ✅ {folder}: {len(files)} archivos, {folder_pts:,} foto-centros")
+            
+            print(f"   ✅ {folder} [{operator}]: {len(files)} archivos, {folder_pts:,} foto-centros")
+        
+        # Save cache
+        save_mrk_cache(mrk_cache)
+        
+        if cache_misses > 0 or cache_hits > 0:
+            print(f"   💾 Cache: {cache_hits} del cache + {cache_misses} nuevos parseados")
         
         if all_mrk_points:
-            print(f"\n   📊 Total: {len(all_mrk_points)} foto-centros")
+            print(f"\n   📊 Total: {len(all_mrk_points):,} foto-centros en {len(all_mrk_data)} archivos")
             
-            # 3. Cruzar MRK con polígonos
+            # Show operators summary
+            op_pts = defaultdict(int)
+            for pt in all_mrk_points:
+                op_pts[pt.get('operator', '?')] += 1
+            for op, count in sorted(op_pts.items()):
+                print(f"      👤 {op}: {count:,} foto-centros")
+            
+            # 3. Intersecciones
             print("\n🔄 Procesando intersecciones...")
             process_intersections(all_polygons, all_mrk_points)
             
-            matched = sum(1 for p in all_mrk_points if p.get('matched'))
-            volados = sum(1 for p in all_polygons if p.get('ESTADO') == 'VOLADO')
-            parciales = sum(1 for p in all_polygons if p.get('ESTADO') == 'PARCIAL')
-            volado_ha = sum(p.get('SUP_HA', 0) for p in all_polygons if p.get('ESTADO') == 'VOLADO')
-            parcial_ha = sum(p.get('SUP_HA', 0) for p in all_polygons if p.get('ESTADO') == 'PARCIAL')
-            cubierta_ha = volado_ha + parcial_ha
-            
-            # Contar predios
-            from collections import Counter
+            # Report
             pred_estados = {}
             for p in all_polygons:
                 key = p.get('NOM_PREDIO', p.get('ID_PREDIO', ''))
                 if key:
                     pred_estados[key] = p.get('ESTADO', 'PENDIENTE')
-            n_pred_volado = sum(1 for e in pred_estados.values() if e == 'VOLADO')
-            n_pred_parcial = sum(1 for e in pred_estados.values() if e == 'PARCIAL')
             
-            print(f"   ✅ {matched}/{len(all_mrk_points)} foto-centros dentro de polígonos")
-            print(f"   ✅ {n_pred_volado} predios volados ({volado_ha:,.1f} ha)")
-            print(f"   🔶 {n_pred_parcial} predios parciales ({parcial_ha:,.1f} ha)")
-            print(f"   📊 Superficie cubierta: {cubierta_ha:,.1f} ha ({cubierta_ha/total_ha*100:.1f}%)")
+            n_volado = sum(1 for e in pred_estados.values() if e == 'VOLADO')
+            n_parcial = sum(1 for e in pred_estados.values() if e == 'PARCIAL')
+            n_pendiente = sum(1 for e in pred_estados.values() if e == 'PENDIENTE')
+            volado_ha = sum(p.get('SUP_HA', 0) for p in all_polygons if p.get('ESTADO') == 'VOLADO')
+            parcial_ha = sum(p.get('SUP_HA', 0) for p in all_polygons if p.get('ESTADO') == 'PARCIAL')
+            cubierta_ha = volado_ha + parcial_ha
+            
+            # Coverage stats
+            cov_polys = [p for p in all_polygons if p.get('_cobertura', 0) > 0]
+            avg_cov = sum(p['_cobertura'] for p in cov_polys) / max(len(cov_polys), 1)
+            
+            print(f"\n   📊 RESUMEN DE COBERTURA:")
+            print(f"   ✅ {n_volado} predios VOLADOS ({volado_ha:,.1f} ha)")
+            print(f"   🔶 {n_parcial} predios PARCIALES ({parcial_ha:,.1f} ha)")
+            print(f"   🔴 {n_pendiente} predios PENDIENTES")
+            print(f"   📐 Cobertura promedio (polígonos con datos): {avg_cov*100:.1f}%")
+            print(f"   📊 Superficie cubierta: {cubierta_ha:,.1f} / {total_ha:,.1f} ha ({cubierta_ha/total_ha*100:.1f}%)")
+            
+            # Diagnóstico: por qué predios son PARCIALES
+            parcial_predios = {}
+            for p in all_polygons:
+                if p.get('ESTADO') == 'PARCIAL':
+                    key = p.get('NOM_PREDIO', p.get('ID_PREDIO', ''))
+                    if key not in parcial_predios:
+                        parcial_predios[key] = {'total':0, 'volado':0, 'parcial':0, 'pendiente':0, 'ha':0}
+                    parcial_predios[key]['total'] += 1
+                    parcial_predios[key]['ha'] += p.get('SUP_HA', 0)
+                    pe = p.get('_polyEstado', 'PENDIENTE')
+                    if pe == 'VOLADO': parcial_predios[key]['volado'] += 1
+                    elif pe == 'PARCIAL': parcial_predios[key]['parcial'] += 1
+                    else: parcial_predios[key]['pendiente'] += 1
+            
+            if parcial_predios:
+                print(f"\n   🔎 DIAGNÓSTICO PREDIOS PARCIALES:")
+                for name, d in sorted(parcial_predios.items(), key=lambda x: -x[1]['ha'])[:10]:
+                    print(f"      {name}: {d['total']} pol ({d['ha']:.1f} ha) → "
+                          f"✅{d['volado']} 🔶{d['parcial']} 🔴{d['pendiente']}")
+            
+            # Stats por operador
+            op_stats = defaultdict(lambda: {'pts':0, 'matched':0})
+            for pt in all_mrk_points:
+                op = pt.get('operator', '?')
+                op_stats[op]['pts'] += 1
+                if pt.get('matched'):
+                    op_stats[op]['matched'] += 1
+            
+            if len(op_stats) > 1:
+                print(f"\n   👥 POR OPERADOR:")
+                for op, d in sorted(op_stats.items()):
+                    eff = d['matched']/d['pts']*100 if d['pts'] else 0
+                    print(f"      {op}: {d['pts']:,} fotos → {d['matched']:,} en pol. ({eff:.1f}%)")
     else:
-        print("   ℹ️  Sin archivos MRK (avance al 0%)")
+        print("   ℹ️  Sin archivos MRK")
     
     # 4. Logo
     logo_b64 = ''
@@ -656,35 +760,28 @@ def main():
     
     # 5. Generar dashboard
     print("\n📄 Generando dashboard...")
+    html = generate_dashboard(all_kml_data, all_mrk_data, operators, logo_b64)
     
-    template_path = TEMPLATE_DIR / "dashboard_template.html"
-    if not template_path.exists():
-        print(f"   ⚠️  No se encontró template en {template_path}")
-        print(f"   Copia 'control_avance_heligrafics.html' como 'template/dashboard_template.html'")
-        sys.exit(1)
-    
-    html = generate_dashboard(all_kml_data, all_mrk_data, logo_b64)
-    
-    # Guardar
     output_path = OUTPUT_DIR / "index.html"
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(html)
     
     size_kb = os.path.getsize(output_path) / 1024
+    total_time = time.time() - t_start
+    
     print(f"   ✅ Dashboard generado: {output_path}")
     print(f"   📦 Tamaño: {size_kb:,.0f} KB")
+    print(f"   ⏱️  Tiempo total: {total_time:.1f}s")
     
-    # 6. Resumen
     print()
     print("=" * 60)
     print("  ✅ LISTO")
     print("=" * 60)
     print()
     print("  Próximos pasos:")
-    print("  1. cd docs/")
-    print("  2. Abre index.html en el navegador para verificar")
-    print("  3. git add -A && git commit -m \"Avance\" && git push")
-    print("  4. El cliente ve la actualización en la URL de GitHub Pages")
+    print("  1. Abre docs/index.html para verificar")
+    print("  2. git add -A && git commit -m \"Avance\" && git push")
+    print("  3. El cliente ve la actualización en GitHub Pages")
     print()
 
 

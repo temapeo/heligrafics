@@ -245,6 +245,7 @@ tr:hover td{background:var(--surface2)}
       <button class="tab" onclick="switchTab('zones',this)">📋 Zonas</button>
       <button class="tab" onclick="switchTab('flights',this)">✈️ Vuelos</button>
       <button class="tab" onclick="switchTab('timeline',this)">📅 Cronograma</button>
+      <button class="tab" id="tabEquipos" onclick="switchTab('equipos',this)">👥 Equipos</button>
     </div>
 
     <!-- OVERVIEW -->
@@ -333,6 +334,8 @@ tr:hover td{background:var(--surface2)}
 
     <!-- TIMELINE -->
     <div id="tab-timeline" class="hidden"><div class="section-title">Cronograma Estimado</div><div class="card" id="timelineContent"></div></div>
+    <!-- EQUIPOS (admin only) -->
+    <div id="tab-equipos" class="hidden"><div class="section-title">Rendimiento por Equipo</div><div id="equiposContent"></div></div>
   </div>
 </div>
 
@@ -954,7 +957,142 @@ function renderTimeline(){
 }
 
 // ========== TABS ==========
-function switchTab(id,btn){document.querySelectorAll('[id^="tab-"]').forEach(e=>e.classList.add('hidden'));document.querySelectorAll('.tab').forEach(e=>e.classList.remove('active'));document.getElementById('tab-'+id).classList.remove('hidden');btn.classList.add('active');if(id==='map'&&map)setTimeout(()=>map.invalidateSize(),100)}
+function switchTab(id,btn){document.querySelectorAll('[id^="tab-"]').forEach(e=>e.classList.add('hidden'));document.querySelectorAll('.tab').forEach(e=>e.classList.remove('active'));document.getElementById('tab-'+id).classList.remove('hidden');btn.classList.add('active');if(id==='map'&&map)setTimeout(()=>map.invalidateSize(),100);if(id==='equipos')renderEquipos()}
+
+// ========== ADMIN MODE ==========
+const IS_ADMIN = new URLSearchParams(window.location.search).has('admin');
+
+// ========== EQUIPOS (admin only) ==========
+function renderEquipos(){
+  const c=document.getElementById('equiposContent');
+  if(!c) return;
+  const pts=getActiveMRKPoints();
+  const polys=getAllPolygons();
+  const fph=55; // fotos por ha estimado
+  
+  if(!pts.length){
+    c.innerHTML='<div style="text-align:center;padding:60px 20px;color:var(--text-dim)"><div style="font-size:48px;margin-bottom:16px;opacity:.4">👥</div><h3>Sin datos de vuelo</h3></div>';
+    return;
+  }
+  
+  // Extract date from MRK folder path: "M3E/MRK_14022026/file.MRK" → "14/02/2026"
+  function extractDate(name){
+    // Try DDMMYYYY
+    let m=name.match(/(\d{2})[-_]?(\d{2})[-_]?(\d{4})/);
+    if(m) return `${m[1]}/${m[2]}/${m[3]}`;
+    // Try YYYYMMDD
+    m=name.match(/(\d{4})(\d{2})(\d{2})/);
+    if(m) return `${m[3]}/${m[2]}/${m[1]}`;
+    return null;
+  }
+  
+  // Build daily stats by operator from mrkFiles
+  const dailyData={}; // {date: {op: {pts, matched, files}}}
+  const opSet=new Set();
+  
+  mrkFiles.forEach(f=>{
+    if(!f.active||!f.points||!f.points.length) return;
+    const op=f.operator||f.points[0]?.operator||'Sin asignar';
+    opSet.add(op);
+    const date=extractDate(f.name)||'sin fecha';
+    if(!dailyData[date]) dailyData[date]={};
+    if(!dailyData[date][op]) dailyData[date][op]={pts:0,matched:0,files:0};
+    dailyData[date][op].pts+=f.points.length;
+    dailyData[date][op].matched+=f.points.filter(p=>p.matchedPoly).length;
+    dailyData[date][op].files++;
+  });
+  
+  const ops=[...opSet].sort();
+  const dates=Object.keys(dailyData).sort();
+  
+  // Operator totals
+  const opTotals={};
+  ops.forEach(op=>{opTotals[op]={pts:0,matched:0,files:0}});
+  dates.forEach(date=>{
+    ops.forEach(op=>{
+      const d=dailyData[date]?.[op];
+      if(d){
+        opTotals[op].pts+=d.pts;
+        opTotals[op].matched+=d.matched;
+        opTotals[op].files+=d.files;
+      }
+    });
+  });
+  
+  let h='';
+  
+  // Summary cards per operator
+  const gridCols=Math.min(ops.length, 3);
+  h+=`<div class="grid-${gridCols}" style="margin-bottom:20px">`;
+  ops.forEach(op=>{
+    const d=opTotals[op];
+    const haEst=(d.matched/fph).toFixed(1);
+    const eff=d.pts>0?(d.matched/d.pts*100).toFixed(0):'0';
+    const icon=op.includes('M3E')?'🟦':op.includes('M3M')?'🟧':'👤';
+    h+=`<div class="card">
+      <div class="card-header"><h3>${icon} ${op}</h3></div>
+      <div class="grid-3" style="margin-bottom:0">
+        <div><div class="zone-stat-label">Foto-centros</div><div class="zone-stat-value">${d.pts.toLocaleString()}</div></div>
+        <div><div class="zone-stat-label">En polígonos</div><div class="zone-stat-value" style="color:var(--success)">${d.matched.toLocaleString()}</div></div>
+        <div><div class="zone-stat-label">Ha estimada</div><div class="zone-stat-value">${haEst}</div></div>
+        <div><div class="zone-stat-label">Archivos</div><div class="zone-stat-value">${d.files}</div></div>
+        <div><div class="zone-stat-label">Eficiencia</div><div class="zone-stat-value">${eff}%</div></div>
+        <div><div class="zone-stat-label">Ha/día prom.</div><div class="zone-stat-value">${dates.length>0?(d.matched/fph/dates.length).toFixed(1):'—'}</div></div>
+      </div>
+    </div>`;
+  });
+  h+='</div>';
+  
+  // Combined daily table with all operators
+  h+=`<div class="card" style="margin-bottom:16px">
+    <div class="card-header"><h3>📅 Avance diario por equipo</h3></div>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Fecha</th>`;
+  ops.forEach(op=>{
+    const short=op.replace('Equipo ','Eq');
+    h+=`<th colspan="2" style="text-align:center;border-left:2px solid var(--border)">${short}</th>`;
+  });
+  h+=`<th style="border-left:2px solid var(--border)">Total día</th></tr>`;
+  h+=`<tr><th></th>`;
+  ops.forEach(op=>{h+=`<th style="border-left:2px solid var(--border);font-size:10px">Fotos</th><th style="font-size:10px">Ha est.</th>`});
+  h+=`<th style="border-left:2px solid var(--border);font-size:10px">Ha est.</th></tr></thead><tbody>`;
+  
+  let grandTotal={pts:0,matched:0};
+  dates.forEach(date=>{
+    let dayTotal=0;
+    h+=`<tr><td style="font-weight:600">${date}</td>`;
+    ops.forEach(op=>{
+      const d=dailyData[date]?.[op];
+      if(d){
+        const ha=(d.matched/fph).toFixed(1);
+        dayTotal+=d.matched/fph;
+        grandTotal.pts+=d.pts;
+        grandTotal.matched+=d.matched;
+        h+=`<td class="mono" style="border-left:2px solid var(--border)">${d.pts.toLocaleString()}</td><td class="mono" style="color:var(--success);font-weight:600">${ha}</td>`;
+      } else {
+        h+=`<td class="mono" style="border-left:2px solid var(--border);color:var(--text-muted)">—</td><td class="mono" style="color:var(--text-muted)">—</td>`;
+      }
+    });
+    h+=`<td class="mono" style="border-left:2px solid var(--border);font-weight:700">${dayTotal.toFixed(1)} ha</td></tr>`;
+  });
+  
+  // Totals row
+  h+=`<tr style="font-weight:700;border-top:3px solid var(--accent)"><td>TOTAL</td>`;
+  ops.forEach(op=>{
+    const d=opTotals[op];
+    h+=`<td class="mono" style="border-left:2px solid var(--border)">${d.pts.toLocaleString()}</td><td class="mono" style="color:var(--success)">${(d.matched/fph).toFixed(1)}</td>`;
+  });
+  h+=`<td class="mono" style="border-left:2px solid var(--border);color:var(--accent);font-size:16px">${(grandTotal.matched/fph).toFixed(1)} ha</td></tr>`;
+  h+=`</tbody></table></div></div>`;
+  
+  // Meta
+  const rendTarget=P.rendHaDia||100;
+  h+=`<div style="font-size:11px;color:var(--text-muted);text-align:center;margin-top:10px">
+    Ha estimada = foto-centros en polígonos ÷ ${fph} fotos/ha · Rendimiento objetivo: ${rendTarget} ha/día/equipo
+  </div>`;
+  
+  c.innerHTML=h;
+}
 
 // ========== EXPORTS ==========
 async function exportFullKMZ(){
@@ -1035,7 +1173,11 @@ function dl(c,f,m){const b=new Blob([c],{type:m+';charset=utf-8;'});const a=docu
     });
     if(EMBEDDED_DATA.mrkFiles) {
       EMBEDDED_DATA.mrkFiles.forEach(f => {
-        mrkFiles.push({name:f.name, rawText:'(embedded)', points:f.points, active:f.active!==false, dateAdded:f.dateAdded||''});
+        // Pass operator to each point
+        if(f.operator && f.points) {
+          f.points.forEach(p => { if(!p.operator) p.operator = f.operator; });
+        }
+        mrkFiles.push({name:f.name, rawText:'(embedded)', points:f.points, active:f.active!==false, operator:f.operator||'', dateAdded:f.dateAdded||''});
       });
     }
     // States already computed by Python - just refresh UI (don't recalculate)
