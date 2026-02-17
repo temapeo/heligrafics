@@ -292,6 +292,15 @@ tr:hover td{background:var(--surface2)}
         <div style="font-size:13px;color:var(--text-dim);margin-bottom:12px">Descarga las líneas de vuelo en formato KML, separadas por equipo y fecha de adquisición.</div>
         <div id="flightDownloadsTable"></div>
       </div>
+      <!-- Hidden but needed by JS -->
+      <div style="display:none">
+        <span id="kmlSummary"></span>
+        <div id="kmlFileList"></div>
+        <input type="file" id="kmlReplace" accept=".kml,.kmz" multiple>
+        <span id="mrkSummary"></span>
+        <div id="mrkFileList"></div>
+        <input type="file" id="mrkAdd" accept=".mrk,.csv,.txt" multiple>
+      </div>
     </div>
 
     <!-- ZONES -->
