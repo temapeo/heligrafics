@@ -292,37 +292,6 @@ tr:hover td{background:var(--surface2)}
         <div style="font-size:13px;color:var(--text-dim);margin-bottom:12px">Descarga las líneas de vuelo en formato KML, separadas por equipo y fecha de adquisición.</div>
         <div id="flightDownloadsTable"></div>
       </div>
-      <div class="grid-2">
-        <div>
-          <div class="section-title">Archivos KML (Polígonos)</div>
-          <div class="card">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-              <span style="font-size:13px;color:var(--text-dim)" id="kmlSummary">Sin archivos</span>
-              <button class="btn btn-sm btn-accent" onclick="document.getElementById('kmlReplace').click()">📍 Agregar / Reemplazar KML</button>
-              <input type="file" id="kmlReplace" accept=".kml,.kmz" multiple style="display:none">
-            </div>
-            <div id="kmlFileList"></div>
-          </div>
-        </div>
-        <div>
-          <div class="section-title">Archivos MRK (Vuelos)</div>
-          <div class="card">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-              <span style="font-size:13px;color:var(--text-dim)" id="mrkSummary">Sin archivos</span>
-              <button class="btn btn-sm btn-accent" onclick="document.getElementById('mrkAdd').click()">✈️ Agregar MRK</button>
-              <input type="file" id="mrkAdd" accept=".mrk,.csv,.txt" multiple style="display:none">
-            </div>
-            <div id="mrkFileList"></div>
-          </div>
-        </div>
-      </div>
-      <div class="card" style="margin-top:16px">
-        <div class="card-header"><h3>⚠️ Gestión de datos</h3></div>
-        <div style="display:flex;gap:10px">
-          <button class="btn btn-danger btn-sm" onclick="if(confirm('¿Eliminar TODOS los datos almacenados? Esta acción no se puede deshacer.')){clearAllData()}">🗑 Borrar todo</button>
-          <button class="btn btn-sm" onclick="recalculate()">🔄 Recalcular estados</button>
-        </div>
-      </div>
     </div>
 
     <!-- ZONES -->
