@@ -1315,7 +1315,7 @@ function resolveFileDate(fileName){
 }
 
 function buildFlightKML(pts, label, singleOp, singleDate){
-  let kml='<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2">\n<Document>\n<n>'+label+'</n>\n<description>Líneas de vuelo - Generado por TeMapeo</description>\n';
+  let kml='<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2">\n<Document>\n<name>'+label+'</name>\n<description>Líneas de vuelo - Generado por TeMapeo</description>\n';
   kml+='<Style id="m3e"><LineStyle><color>fff5a521</color><width>3</width></LineStyle></Style>\n';
   kml+='<Style id="m3m"><LineStyle><color>ff0098ff</color><width>3</width></LineStyle></Style>\n';
   kml+='<Style id="default"><LineStyle><color>ff0aaed9</color><width>3</width></LineStyle></Style>\n';
@@ -1326,7 +1326,7 @@ function buildFlightKML(pts, label, singleOp, singleDate){
     Object.entries(byFile).forEach(([f,d])=>{
       if(d.pts.length<2) return;
       const sid=d.op==='M3E'?'m3e':d.op==='M3M'?'m3m':'default';
-      kml+='<Placemark>\n<n>'+f+'</n>\n<description>Equipo: '+d.op+' | Fecha: '+d.date+' | Puntos: '+d.pts.length+'</description>\n<styleUrl>#'+sid+'</styleUrl>\n<LineString><altitudeMode>relativeToGround</altitudeMode><coordinates>\n';
+      kml+='<Placemark>\n<name>'+f+'</name>\n<description>Equipo: '+d.op+' | Fecha: '+d.date+' | Puntos: '+d.pts.length+'</description>\n<styleUrl>#'+sid+'</styleUrl>\n<LineString><altitudeMode>relativeToGround</altitudeMode><coordinates>\n';
       d.pts.forEach(p=>{kml+=p.lng+','+p.lat+',60\n'});
       kml+='</coordinates></LineString>\n</Placemark>\n';
     });
@@ -1335,13 +1335,13 @@ function buildFlightKML(pts, label, singleOp, singleDate){
     Object.entries(byFile).forEach(([f,d])=>{const op=d.op||'Sin equipo';const dt=d.date||'sin-fecha';if(!tree[op])tree[op]={};if(!tree[op][dt])tree[op][dt]=[];tree[op][dt].push(Object.assign({file:f},d))});
     Object.keys(tree).sort().forEach(op=>{
       const needOpFolder=!singleOp;
-      if(needOpFolder) kml+='<Folder>\n<n>'+op+'</n>\n';
+      if(needOpFolder) kml+='<Folder>\n<name>'+op+'</name>\n';
       Object.keys(tree[op]).sort().forEach(dt=>{
-        kml+='<Folder>\n<n>'+(needOpFolder?dt:op+' — '+dt)+'</n>\n';
+        kml+='<Folder>\n<name>'+(needOpFolder?dt:op+' — '+dt)+'</name>\n';
         tree[op][dt].forEach(d=>{
           if(d.pts.length<2) return;
           const sid=d.op==='M3E'?'m3e':d.op==='M3M'?'m3m':'default';
-          kml+='<Placemark>\n<n>'+d.file+'</n>\n<description>Equipo: '+d.op+' | Fecha: '+dt+' | Puntos: '+d.pts.length+'</description>\n<styleUrl>#'+sid+'</styleUrl>\n<LineString><altitudeMode>relativeToGround</altitudeMode><coordinates>\n';
+          kml+='<Placemark>\n<name>'+d.file+'</name>\n<description>Equipo: '+d.op+' | Fecha: '+dt+' | Puntos: '+d.pts.length+'</description>\n<styleUrl>#'+sid+'</styleUrl>\n<LineString><altitudeMode>relativeToGround</altitudeMode><coordinates>\n';
           d.pts.forEach(p=>{kml+=p.lng+','+p.lat+',60\n'});
           kml+='</coordinates></LineString>\n</Placemark>\n';
         });
