@@ -91,7 +91,7 @@ header{background:linear-gradient(135deg,#fff 0%,#f0f4fa 100%);border-bottom:1px
 .progress-detail{display:flex;justify-content:space-between;margin-top:6px;font-size:12px;color:var(--text-dim)}
 
 /* MAP */
-#map{height:500px;border-radius:var(--radius);border:1px solid var(--border)}
+#map{height:calc(100vh - 180px);min-height:400px;border-radius:var(--radius);border:1px solid var(--border)}
 #previewMap{height:300px;border-radius:var(--radius);border:1px solid var(--border);margin-top:12px}
 .leaflet-popup-content-wrapper{background:#fff!important;color:var(--text)!important;border:1px solid var(--border)!important;border-radius:var(--radius-sm)!important;box-shadow:0 2px 12px rgba(0,0,0,.12)!important}
 .leaflet-popup-tip{background:#fff!important}
@@ -281,18 +281,17 @@ tr:hover td{background:var(--surface2)}
         <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text-dim);cursor:pointer"><input type="checkbox" id="showMRK" onchange="updateMap()" style="accent-color:var(--accent)"> Líneas MRK</label>
         <select class="filter-select" id="mapFilterEquipo" onchange="updateMap()"><option value="">Todos los equipos</option></select>
         <select class="filter-select" id="mapFilterFecha" onchange="updateMap()"><option value="">Todas las fechas</option></select>
-        <button onclick="downloadFilteredKML()" style="background:var(--accent);color:#fff;border:none;border-radius:6px;padding:6px 14px;font-size:12px;cursor:pointer;white-space:nowrap">📥 Descargar líneas KML</button>
       </div>
       <div id="mapContainer" style="position:relative"><div id="map"></div></div>
-      <div class="grid-3" style="margin-top:14px">
-        <div class="card" style="text-align:center"><div class="zone-stat-label">Polígonos</div><div class="zone-stat-value" id="mapPolyCount">—</div></div>
-        <div class="card" style="text-align:center"><div class="zone-stat-label">Superficie</div><div class="zone-stat-value" id="mapHaCount">—</div></div>
-        <div class="card" style="text-align:center"><div class="zone-stat-label">Leyenda</div><div id="mapLegend" style="font-size:12px;text-align:left;margin-top:4px"></div></div>
-      </div>
     </div>
 
     <!-- DATA MANAGER -->
     <div id="tab-data" class="hidden">
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-header"><h3>📥 Descargar Líneas de Vuelo</h3></div>
+        <div style="font-size:13px;color:var(--text-dim);margin-bottom:12px">Descarga las líneas de vuelo en formato KML, separadas por equipo y fecha de adquisición.</div>
+        <div id="flightDownloadsTable"></div>
+      </div>
       <div class="grid-2">
         <div>
           <div class="section-title">Archivos KML (Polígonos)</div>
@@ -316,11 +315,6 @@ tr:hover td{background:var(--surface2)}
             <div id="mrkFileList"></div>
           </div>
         </div>
-      </div>
-      <div class="card" style="margin-top:16px">
-        <div class="card-header"><h3>📥 Descargar Líneas de Vuelo</h3></div>
-        <div style="font-size:13px;color:var(--text-dim);margin-bottom:12px">Descarga las líneas de vuelo en formato KML, separadas por equipo y fecha de adquisición.</div>
-        <div id="flightDownloadsTable"></div>
       </div>
       <div class="card" style="margin-top:16px">
         <div class="card-header"><h3>⚠️ Gestión de datos</h3></div>
@@ -963,13 +957,31 @@ function updateMap(){
   }
   polyLayer=g;g.addTo(map);
   if(g.getLayers().length) map.fitBounds(g.getBounds(),{padding:[30,30]});
-  // Click on map background to clear highlight
   map.on('click',function(e){if(window._highlightLayer){map.removeLayer(window._highlightLayer);window._highlightLayer=null}closeMapPanel()});
-  const th=f.reduce((s,p)=>s+(p.SUP_HA||0),0);
-  document.getElementById('mapPolyCount').textContent=f.length;
-  document.getElementById('mapHaCount').textContent=fmt(th)+' ha';
-  let lh='';Object.entries(cols[colorBy]).forEach(([l,c])=>{lh+=`<div style="display:flex;align-items:center;gap:6px;margin:2px 0"><span style="width:10px;height:10px;border-radius:2px;background:${c};display:inline-block"></span><span>${l}</span></div>`});
-  document.getElementById('mapLegend').innerHTML=lh;
+  
+  // Legend as Leaflet control (bottom-left)
+  if(window._legendControl){map.removeControl(window._legendControl)}
+  const legend=L.control({position:'bottomleft'});
+  legend.onAdd=function(){
+    const div=L.DomUtil.create('div','');
+    div.style.cssText='background:rgba(255,255,255,.92);padding:8px 12px;border-radius:8px;font-size:11px;line-height:1.6;box-shadow:0 1px 4px rgba(0,0,0,.15);max-width:160px';
+    let lh=`<div style="font-weight:700;margin-bottom:4px;font-size:10px;text-transform:uppercase;color:#666">Polígonos</div>`;
+    Object.entries(cols[colorBy]).forEach(([l,c])=>{
+      lh+=`<div style="display:flex;align-items:center;gap:5px"><span style="width:10px;height:10px;border-radius:2px;background:${c};display:inline-block;flex-shrink:0"></span><span>${l}</span></div>`;
+    });
+    if(showMrk){
+      lh+=`<div style="font-weight:700;margin:6px 0 4px;font-size:10px;text-transform:uppercase;color:#666;border-top:1px solid #ddd;padding-top:6px">Líneas de vuelo</div>`;
+      lh+=`<div style="display:flex;align-items:center;gap:5px"><span style="width:14px;height:3px;background:#2196F3;display:inline-block;border-radius:2px"></span><span>M3E</span></div>`;
+      lh+=`<div style="display:flex;align-items:center;gap:5px"><span style="width:14px;height:3px;background:#FF9800;display:inline-block;border-radius:2px"></span><span>M3M</span></div>`;
+    }
+    const th=f.reduce((s,p)=>s+(p.SUP_HA||0),0);
+    lh+=`<div style="font-size:10px;color:#888;margin-top:6px;border-top:1px solid #ddd;padding-top:4px">${f.length} pol. · ${fmt(th)} ha</div>`;
+    div.innerHTML=lh;
+    L.DomEvent.disableClickPropagation(div);
+    return div;
+  };
+  legend.addTo(map);
+  window._legendControl=legend;
 }
 
 // ========== ZONES ==========
