@@ -281,6 +281,7 @@ tr:hover td{background:var(--surface2)}
         <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text-dim);cursor:pointer"><input type="checkbox" id="showMRK" onchange="updateMap()" style="accent-color:var(--accent)"> Líneas MRK</label>
         <select class="filter-select" id="mapFilterEquipo" onchange="updateMap()"><option value="">Todos los equipos</option></select>
         <select class="filter-select" id="mapFilterFecha" onchange="updateMap()"><option value="">Todas las fechas</option></select>
+        <button onclick="downloadFilteredKML()" style="background:var(--accent);color:#fff;border:none;border-radius:6px;padding:6px 14px;font-size:12px;cursor:pointer;white-space:nowrap">📥 Descargar líneas KML</button>
       </div>
       <div id="mapContainer" style="position:relative"><div id="map"></div></div>
       <div class="grid-3" style="margin-top:14px">
@@ -315,6 +316,11 @@ tr:hover td{background:var(--surface2)}
             <div id="mrkFileList"></div>
           </div>
         </div>
+      </div>
+      <div class="card" style="margin-top:16px">
+        <div class="card-header"><h3>📥 Descargar Líneas de Vuelo</h3></div>
+        <div style="font-size:13px;color:var(--text-dim);margin-bottom:12px">Descarga las líneas de vuelo en formato KML, separadas por equipo y fecha de adquisición.</div>
+        <div id="flightDownloadsTable"></div>
       </div>
       <div class="card" style="margin-top:16px">
         <div class="card-header"><h3>⚠️ Gestión de datos</h3></div>
@@ -671,6 +677,7 @@ function refreshAll() {
   renderDataManager();
   renderZones();
   renderFlights();
+  renderFlightDownloads();
   renderTimeline();
   if(map) updateMap();
 }
@@ -1283,6 +1290,135 @@ async function exportFullKMZ(){
   const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`avance_heligrafics_${now.toISOString().split('T')[0]}.kmz`;a.click();
 }
 
+
+// ========== FLIGHT LINE DOWNLOADS ==========
+function buildFlightKML(pts, label){
+  let kml=`<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2">\n<Document>\n<name>${label}</name>\n<description>Líneas de vuelo - Generado por TeMapeo</description>\n`;
+  kml+=`<Style id="m3e"><LineStyle><color>fff5a521</color><width>3</width></LineStyle></Style>\n`;
+  kml+=`<Style id="m3m"><LineStyle><color>ff0098ff</color><width>3</width></LineStyle></Style>\n`;
+  kml+=`<Style id="default"><LineStyle><color>ff0aaed9</color><width>3</width></LineStyle></Style>\n`;
+  // Group by file to create separate lines
+  const byFile={};
+  pts.forEach(p=>{
+    const k=p.file||'unknown';
+    if(!byFile[k])byFile[k]={pts:[],op:p.operator||p.op||''};
+    byFile[k].pts.push(p);
+  });
+  Object.entries(byFile).forEach(([f,d])=>{
+    if(d.pts.length<2) return;
+    const styleId=d.op==='M3E'?'m3e':d.op==='M3M'?'m3m':'default';
+    kml+=`<Placemark>\n<name>${f}</name>\n<description>Equipo: ${d.op||'—'} | Puntos: ${d.pts.length}</description>\n<styleUrl>#${styleId}</styleUrl>\n<LineString><altitudeMode>relativeToGround</altitudeMode><coordinates>\n`;
+    d.pts.forEach(p=>{kml+=`${p.lng},${p.lat},60\n`});
+    kml+=`</coordinates></LineString>\n</Placemark>\n`;
+  });
+  kml+=`</Document>\n</kml>`;
+  return kml;
+}
+
+function downloadFilteredKML(){
+  const eqFilter=document.getElementById('mapFilterEquipo')?.value||'';
+  const dtFilter=document.getElementById('mapFilterFecha')?.value||'';
+  let pts=getActiveMRKPoints();
+  if(!pts.length) return alert('No hay datos MRK cargados');
+  if(eqFilter) pts=pts.filter(p=>(p.operator||p.op||'')===eqFilter);
+  if(dtFilter){
+    // Get files that belong to the selected date
+    const dateFiles=new Set();
+    mrkFiles.forEach(f=>{
+      const m=f.name.match(/(\d{2})[-_]?(\d{2})[-_]?(\d{4})/);
+      let d='';if(m) d=`${m[1]}/${m[2]}/${m[3]}`;
+      else{const m2=f.name.match(/(\d{4})(\d{2})(\d{2})/);if(m2) d=`${m2[3]}/${m2[2]}/${m2[1]}`;}
+      if(d===dtFilter && f.points) f.points.forEach(p=>dateFiles.add(p.file));
+    });
+    pts=pts.filter(p=>dateFiles.has(p.file));
+  }
+  if(!pts.length) return alert('No hay líneas con los filtros seleccionados');
+  const parts=[];
+  if(eqFilter) parts.push(eqFilter);
+  if(dtFilter) parts.push(dtFilter.replace(/\//g,'-'));
+  if(!parts.length) parts.push('todos');
+  const fname=`lineas_vuelo_${parts.join('_')}.kml`;
+  const label=`Líneas de vuelo${eqFilter?' — '+eqFilter:''}${dtFilter?' — '+dtFilter:''}`;
+  const kml=buildFlightKML(pts, label);
+  const blob=new Blob([kml],{type:'application/vnd.google-earth.kml+xml'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=fname;a.click();
+}
+
+function downloadFlightKML(op, date){
+  let pts=getActiveMRKPoints();
+  if(op) pts=pts.filter(p=>(p.operator||p.op||'')===op);
+  if(date){
+    const dateFiles=new Set();
+    mrkFiles.forEach(f=>{
+      const m=f.name.match(/(\d{2})[-_]?(\d{2})[-_]?(\d{4})/);
+      let d='';if(m) d=`${m[1]}/${m[2]}/${m[3]}`;
+      else{const m2=f.name.match(/(\d{4})(\d{2})(\d{2})/);if(m2) d=`${m2[3]}/${m2[2]}/${m2[1]}`;}
+      if(d===date && f.points) f.points.forEach(p=>dateFiles.add(p.file));
+    });
+    pts=pts.filter(p=>dateFiles.has(p.file));
+  }
+  if(!pts.length) return alert('Sin datos');
+  const datePart=date?date.replace(/\//g,'-'):'todas';
+  const fname=`lineas_${op||'todos'}_${datePart}.kml`;
+  const label=`Líneas ${op||'Todos'} — ${date||'Todas las fechas'}`;
+  const kml=buildFlightKML(pts, label);
+  const blob=new Blob([kml],{type:'application/vnd.google-earth.kml+xml'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=fname;a.click();
+}
+
+function renderFlightDownloads(){
+  const c=document.getElementById('flightDownloadsTable');
+  if(!c) return;
+  const pts=getActiveMRKPoints();
+  if(!pts.length){c.innerHTML='<div style="color:var(--text-muted);font-size:13px;padding:10px">Sin datos MRK disponibles</div>';return}
+  // Collect unique op+date combos
+  const combos={};
+  const ops=new Set(), dates=new Set();
+  mrkFiles.forEach(f=>{
+    const op=f.operator||'';
+    const m=f.name.match(/(\d{2})[-_]?(\d{2})[-_]?(\d{4})/);
+    let dt='';if(m) dt=`${m[1]}/${m[2]}/${m[3]}`;
+    else{const m2=f.name.match(/(\d{4})(\d{2})(\d{2})/);if(m2) dt=`${m2[3]}/${m2[2]}/${m2[1]}`;}
+    if(op) ops.add(op);
+    if(dt) dates.add(dt);
+    if(op && dt){
+      const key=`${op}|${dt}`;
+      if(!combos[key]) combos[key]={op,dt,pts:0};
+      combos[key].pts+=(f.points?f.points.length:0);
+    }
+  });
+  const sortedDates=[...dates].sort();
+  const sortedOps=[...ops].sort();
+  let h=`<table><thead><tr><th>Equipo</th><th>Fecha</th><th>Foto-centros</th><th></th></tr></thead><tbody>`;
+  sortedOps.forEach(op=>{
+    sortedDates.forEach(dt=>{
+      const key=`${op}|${dt}`;
+      const combo=combos[key];
+      if(!combo) return;
+      const icon=op==='M3E'?'🟦':'🟧';
+      h+=`<tr>
+        <td>${icon} ${op}</td>
+        <td style="font-weight:600">${dt}</td>
+        <td class="mono">${combo.pts.toLocaleString()}</td>
+        <td><button onclick="downloadFlightKML('${op}','${dt}')" style="background:var(--accent);color:#fff;border:none;border-radius:4px;padding:4px 10px;font-size:11px;cursor:pointer">📥 KML</button></td>
+      </tr>`;
+    });
+  });
+  // Add "all" rows
+  sortedOps.forEach(op=>{
+    const icon=op==='M3E'?'🟦':'🟧';
+    h+=`<tr style="border-top:2px solid var(--border)">
+      <td>${icon} ${op}</td><td style="font-weight:600;color:var(--text-dim)">Todas las fechas</td><td class="mono">—</td>
+      <td><button onclick="downloadFlightKML('${op}','')" style="background:var(--success);color:#fff;border:none;border-radius:4px;padding:4px 10px;font-size:11px;cursor:pointer">📥 KML</button></td>
+    </tr>`;
+  });
+  h+=`<tr style="border-top:2px solid var(--border)">
+    <td>Todos</td><td style="font-weight:600;color:var(--text-dim)">Todas las fechas</td><td class="mono">${pts.length.toLocaleString()}</td>
+    <td><button onclick="downloadFlightKML('','')" style="background:#7c3aed;color:#fff;border:none;border-radius:4px;padding:4px 10px;font-size:11px;cursor:pointer">📥 KML</button></td>
+  </tr>`;
+  h+=`</tbody></table>`;
+  c.innerHTML=h;
+}
 
 // ========== HELPERS ==========
 function fmt(n){return n.toLocaleString('es-CL',{maximumFractionDigits:1})}
