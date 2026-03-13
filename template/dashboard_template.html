@@ -1419,7 +1419,11 @@ function renderFlightDownloads(){
 }
 
 // ========== HELPERS ==========
-function fmt(n){return n.toLocaleString('es-CL',{maximumFractionDigits:1})}
+function fmt(n){
+  const parts=n.toFixed(1).split('.');
+  parts[0]=parts[0].replace(/\B(?=(\d{3})+(?!\d))/g,'.');
+  return parts.join(',');
+}
 function fd(d){return d.toLocaleDateString('es-CL',{day:'2-digit',month:'short'})}
 function addBD(d,n){const r=new Date(d);let a=0;while(a<n){r.setDate(r.getDate()+1);if(r.getDay()!==0&&r.getDay()!==6)a++}return r}
 function dl(c,f,m){const b=new Blob([c],{type:m+';charset=utf-8;'});const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=f;a.click()}
