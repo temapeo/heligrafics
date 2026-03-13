@@ -452,7 +452,8 @@ def process_intersections(polygons, mrk_points):
             p['_polyEstado'] = 'PENDIENTE'
     
     # --- Propagar estado a nivel de predio ---
-    # Regla estricta: todos los polígonos deben ser VOLADO para que el predio sea VOLADO
+    # Regla: si todos los polígonos CON SUPERFICIE están VOLADO, el predio es VOLADO
+    # Polígonos sin superficie (0 ha) o sin coordenadas no bloquean el estado
     predios = defaultdict(list)
     for p in polygons:
         key = p.get('NOM_PREDIO', p.get('ID_PREDIO', ''))
@@ -460,12 +461,25 @@ def process_intersections(polygons, mrk_points):
             predios[key].append(p)
     
     for predio, polys in predios.items():
-        estados = set(p['_polyEstado'] for p in polys)
-        total_hits = sum(p.get('_mrkHits', 0) for p in polys)
+        # Separate meaningful polygons (with area) from empty/degenerate ones
+        polys_con_sup = [p for p in polys if p.get('SUP_HA', 0) > 0.01]
+        polys_sin_sup = [p for p in polys if p.get('SUP_HA', 0) <= 0.01]
+        
+        if not polys_con_sup:
+            # All polygons are empty — use raw estados
+            estados = set(p['_polyEstado'] for p in polys)
+            total_hits = sum(p.get('_mrkHits', 0) for p in polys)
+        else:
+            # Only consider polygons with real surface area
+            estados = set(p['_polyEstado'] for p in polys_con_sup)
+            total_hits = sum(p.get('_mrkHits', 0) for p in polys_con_sup)
         
         if estados == {'VOLADO'}:
             predio_estado = 'VOLADO'
-        elif total_hits == 0 and all(p.get('_cobertura', 0) == 0 for p in polys):
+            # Also mark empty polygons as VOLADO if the whole predio is covered
+            for p in polys_sin_sup:
+                p['_polyEstado'] = 'VOLADO'
+        elif total_hits == 0 and all(p.get('_cobertura', 0) == 0 for p in (polys_con_sup or polys)):
             predio_estado = 'PENDIENTE'
         elif any(p.get('_cobertura', 0) > 0 or p.get('_mrkHits', 0) > 0 for p in polys):
             predio_estado = 'PARCIAL'
@@ -908,6 +922,23 @@ def main():
                     print(f"      {name}: {d['total']} pol ({d['ha']:.1f} ha) → "
                           f"✅{d['volado']} 🔶{d['parcial']} 🔴{d['pendiente']} "
                           f"[{pct:.0f}% sup volada]")
+                
+                # Detail: show each non-VOLADO polygon in partial predios
+                print(f"\n   🔬 POLÍGONOS PROBLEMÁTICOS EN PREDIOS PARCIALES:")
+                for p in all_polygons:
+                    if p.get('ESTADO') != 'PARCIAL':
+                        continue
+                    if p.get('_polyEstado') in ('VOLADO',):
+                        continue
+                    predio = p.get('NOM_PREDIO', p.get('ID_PREDIO', '?'))
+                    cov = p.get('_cobertura', 0)
+                    hits = p.get('_mrkHits', 0)
+                    ha = p.get('SUP_HA', 0)
+                    poly_id = p.get('id', '?')
+                    estado = p.get('_polyEstado', '?')
+                    print(f"      [{predio}] pol={poly_id} | {ha:.2f} ha | "
+                          f"cobertura={cov:.1%} | hits={hits} | estado={estado} | "
+                          f"umbral={UMBRAL_COBERTURA:.0%}")
             
             # Stats por operador
             op_stats = defaultdict(lambda: {'pts':0, 'matched':0})
