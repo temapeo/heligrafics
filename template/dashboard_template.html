@@ -864,11 +864,12 @@ function updateMap(){
           <button onclick="closeMapPanel()" style="background:none;border:none;cursor:pointer;font-size:16px;color:#999;padding:0 0 0 8px">✕</button>
         </div>
         <div style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700;color:#fff;background:${estColor};margin-bottom:8px">${p.ESTADO}</div>
-        <div style="font-size:12px;color:#666;margin-bottom:6px">${p.ZONA||'—'} · ${p.AREA||'—'}</div>
+        <div style="font-size:12px;color:#666;margin-bottom:2px">${p.ZONA||'—'} · ${p.AREA||'—'}</div>
+        <div style="font-size:11px;color:#888;margin-bottom:6px">${p.ID_PREDIO?'ID: '+p.ID_PREDIO:''}${p.TIPOUSO?' · '+p.TIPOUSO:''}</div>
         <div style="font-size:12px;border-top:1px solid #eee;padding-top:8px;margin-top:4px">
-          <div style="display:flex;justify-content:space-between;margin:3px 0"><span style="color:#666">Superficie</span><span style="font-weight:600;font-family:JetBrains Mono,monospace">${predioHa.toFixed(1)} ha</span></div>
+          <div style="display:flex;justify-content:space-between;margin:3px 0"><span style="color:#666">Superficie</span><span style="font-weight:600;font-family:JetBrains Mono,monospace">${fmt(predioHa)} ha</span></div>
           <div style="display:flex;justify-content:space-between;margin:3px 0"><span style="color:#666">Polígonos</span><span style="font-weight:600;font-family:JetBrains Mono,monospace">${nPol}</span></div>
-          <div style="display:flex;justify-content:space-between;margin:3px 0"><span style="color:#198754">✅ Cubiertos</span><span style="font-weight:600;font-family:JetBrains Mono,monospace">${nVol} (${volHa.toFixed(1)} ha)</span></div>
+          <div style="display:flex;justify-content:space-between;margin:3px 0"><span style="color:#198754">✅ Cubiertos</span><span style="font-weight:600;font-family:JetBrains Mono,monospace">${nVol} (${fmt(volHa)} ha)</span></div>
           <div style="display:flex;justify-content:space-between;margin:3px 0"><span style="color:#e67e22">🔶 Parciales</span><span style="font-weight:600;font-family:JetBrains Mono,monospace">${nPar}</span></div>
           <div style="display:flex;justify-content:space-between;margin:3px 0"><span style="color:#dc3545">🔴 Pendientes</span><span style="font-weight:600;font-family:JetBrains Mono,monospace">${nPend}</span></div>
           <div style="display:flex;justify-content:space-between;margin:3px 0;border-top:1px solid #eee;padding-top:4px"><span style="color:#666">📷 Fotos MRK</span><span style="font-weight:600;font-family:JetBrains Mono,monospace">${predioHits.toLocaleString()}</span></div>
