@@ -299,16 +299,15 @@ function parseMRK(text,filename){
 
 // ========== COVERAGE ==========
 function calculateCoverage(){
-  if(!polygons.length)return;
-  
   var i,j,p;
-  for(i=0;i<polygons.length;i++){
-    polygons[i].hits=0;polygons[i].cobertura=0;polygons[i].estado='PENDIENTE';
-  }
   
-  if(!mrkPoints.length){updateDisplay();return}
-  
-  // Point-in-polygon
+  if(polygons.length){
+    for(i=0;i<polygons.length;i++){
+      polygons[i].hits=0;polygons[i].cobertura=0;polygons[i].estado='PENDIENTE';
+    }
+    
+    if(mrkPoints.length){
+      // Point-in-polygon
   for(i=0;i<polygons.length;i++){
     p=polygons[i];
     var coords=p.coords;
@@ -332,6 +331,8 @@ function calculateCoverage(){
     else if(p.hits>0)p.estado='PARCIAL';
     else p.estado='PENDIENTE';
   }
+    } // end if mrkPoints.length
+  } // end if polygons.length
   
   updateDisplay();
 }
@@ -409,6 +410,15 @@ function updateDisplay(){
       L.polyline(ll,{color:'#2196F3',weight:2,opacity:.6}).addTo(mrkLayer);
     }
     mrkLayer.addTo(map);
+    // Autozoom to MRK area on first load
+    if(window._needsZoomToMRK){
+      window._needsZoomToMRK=false;
+      setTimeout(function(){
+        if(mrkLayer&&mrkLayer.getLayers().length>0){
+          map.fitBounds(mrkLayer.getBounds(),{padding:[30,30]});
+        }
+      },300);
+    }
   }
   
   // Stats
@@ -485,15 +495,13 @@ function loadMRK(files){
   if(!files||!files.length)return;
   var totalNew=0;
   var pending=files.length;
+  window._needsZoomToMRK=true;
   
   function done(){
     pending--;
     if(pending<=0){
       if(totalNew>0)toast('✈️ +'+totalNew.toLocaleString()+' fotos ('+mrkPoints.length.toLocaleString()+' total)');
       calculateCoverage();
-      if(mrkLayer&&mrkLayer.getLayers().length>0){
-        map.fitBounds(mrkLayer.getBounds(),{padding:[30,30]});
-      }
     }
   }
   
