@@ -114,8 +114,8 @@ input[type="file"]{display:none}
     <button class="btn btn-outline" onclick="clearMRK()">🗑 Limpiar</button>
   </div>
   
-  <input type="file" id="kmlInput" accept=".kml,.kmz" onchange="loadKML(this.files);this.value=''">
-  <input type="file" id="mrkInput" accept=".mrk,.MRK,.csv,.txt,.zip,.ZIP" multiple onchange="loadMRK(this.files);this.value=''">
+  <input type="file" id="kmlInput" accept="*/*" onchange="loadKML(this.files);this.value=''">
+  <input type="file" id="mrkInput" accept="*/*" multiple onchange="loadMRK(this.files);this.value=''">
 </div>
 
 <!-- Welcome overlay -->
