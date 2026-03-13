@@ -491,6 +491,9 @@ function loadMRK(files){
     if(pending<=0){
       if(totalNew>0)toast('✈️ +'+totalNew.toLocaleString()+' fotos ('+mrkPoints.length.toLocaleString()+' total)');
       calculateCoverage();
+      if(mrkLayer&&mrkLayer.getLayers().length>0){
+        map.fitBounds(mrkLayer.getBounds(),{padding:[30,30]});
+      }
     }
   }
   
