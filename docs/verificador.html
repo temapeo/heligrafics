@@ -410,14 +410,30 @@ function updateDisplay(){
       L.polyline(ll,{color:'#2196F3',weight:2,opacity:.6}).addTo(mrkLayer);
     }
     mrkLayer.addTo(map);
-    // Autozoom to MRK area on first load
+    // Autozoom to MRK area - iOS needs invalidateSize + delay
     if(window._needsZoomToMRK){
       window._needsZoomToMRK=false;
-      setTimeout(function(){
-        if(mrkLayer&&mrkLayer.getLayers().length>0){
-          map.fitBounds(mrkLayer.getBounds(),{padding:[30,30]});
-        }
-      },300);
+      var bounds=mrkLayer.getBounds();
+      if(bounds.isValid()){
+        // Immediate attempt
+        map.invalidateSize();
+        map.fitBounds(bounds,{padding:[30,30],animate:false});
+        // iOS fallback: use setView with center+zoom after delay
+        setTimeout(function(){
+          map.invalidateSize();
+          try{
+            map.fitBounds(bounds,{padding:[30,30],animate:false});
+          }catch(e){
+            var c=bounds.getCenter();
+            map.setView(c,13);
+          }
+        },500);
+        // Second fallback for very slow iOS
+        setTimeout(function(){
+          map.invalidateSize();
+          map.fitBounds(bounds,{padding:[20,20],animate:false});
+        },1500);
+      }
     }
   }
   
@@ -453,7 +469,10 @@ function loadKML(files){
       document.getElementById('welcomeOverlay').classList.add('hidden');
       calculateCoverage();
       if(polyLayer&&polyLayer.getLayers().length){
-        map.fitBounds(polyLayer.getBounds(),{padding:[30,30]});
+        var b=polyLayer.getBounds();
+        map.invalidateSize();
+        map.fitBounds(b,{padding:[30,30],animate:false});
+        setTimeout(function(){map.invalidateSize();map.fitBounds(b,{padding:[30,30],animate:false})},500);
       }
     }
   }
