@@ -272,15 +272,25 @@ function parseMRK(text,filename){
   for(var li=0;li<lines.length;li++){
     var line=lines[li].trim();
     if(!line||line.charAt(0)==='#')continue;
-    var parts=line.split(/[\s,\t]+/);
-    if(parts.length<3)continue;
     var lat=0,lng=0,found=false;
-    for(var c=0;c<parts.length-1;c++){
-      var a=parseFloat(parts[c]);
-      var b=parseFloat(parts[c+1]);
-      if(isNaN(a)||isNaN(b))continue;
-      if(Math.abs(a)>20&&Math.abs(a)<60&&Math.abs(b)>50&&Math.abs(b)<180){lat=a;lng=b;found=true;break}
-      if(Math.abs(b)>20&&Math.abs(b)<60&&Math.abs(a)>50&&Math.abs(a)<180){lat=b;lng=a;found=true;break}
+    // DJI format: ...,Lat and ...,Lon tokens
+    var latMatch=line.match(/([-\d.]+),Lat/i);
+    var lonMatch=line.match(/([-\d.]+),Lon/i);
+    if(latMatch&&lonMatch){
+      lat=parseFloat(latMatch[1]);
+      lng=parseFloat(lonMatch[1]);
+      if(!isNaN(lat)&&!isNaN(lng)&&Math.abs(lat)>0.1&&Math.abs(lng)>0.1){found=true}
+    }
+    // Fallback: try pairs of consecutive numbers
+    if(!found){
+      var parts=line.split(/[\s,\t]+/);
+      for(var c=0;c<parts.length-1;c++){
+        var a=parseFloat(parts[c]);
+        var b=parseFloat(parts[c+1]);
+        if(isNaN(a)||isNaN(b))continue;
+        if(Math.abs(a)>20&&Math.abs(a)<60&&Math.abs(b)>50&&Math.abs(b)<180){lat=a;lng=b;found=true;break}
+        if(Math.abs(b)>20&&Math.abs(b)<60&&Math.abs(a)>50&&Math.abs(a)<180){lat=b;lng=a;found=true;break}
+      }
     }
     if(found)pts.push({lat:lat,lng:lng,file:filename});
   }
