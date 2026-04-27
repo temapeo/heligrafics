@@ -70,6 +70,11 @@ RENDIMIENTO_HA_DIA = 100
 EQUIPOS = 2
 FECHA_INICIO = "2026-02-15"
 
+# Revuelos
+REVUELO_KML = "revuelos.kml"              # archivo KML en datos/kml/ con polígonos a revolar
+OPERADORES_REVUELO = ['M3E-2', 'M3M-2']  # operadores de revuelo
+MATCH_TOLERANCE = 0.0005                   # ~55m tolerancia para match de centroides
+
 # Parámetros de cobertura (buffer de líneas de vuelo)
 ALTURA_VUELO = 60       # metros AGL
 BUFFER_M = 27           # buffer a cada lado de la línea (~54m swath Mavic 3M a 60m)
@@ -284,8 +289,12 @@ def detect_operator(folder_path):
             except:
                 pass
         
-        # Check folder name
+        # Check folder name — check revuelo operators first (more specific match)
         name = check.name.upper()
+        if any(x in name for x in ['M3E-2', 'M3E_2', 'M3E2']):
+            return 'M3E-2'
+        if any(x in name for x in ['M3M-2', 'M3M_2', 'M3M2']):
+            return 'M3M-2'
         if any(x in name for x in ['M3E', 'EQUIPO1', 'EQ1']):
             return 'M3E'
         if any(x in name for x in ['M3M', 'EQUIPO2', 'EQ2']):
@@ -331,21 +340,33 @@ def process_intersections(polygons, mrk_points):
             p['_bbox'] = (min(lats), max(lats), min(lngs), max(lngs))
     
     # --- Conteo de puntos (con bbox pre-filtro) ---
+    # Para polígonos de revuelo, solo cuentan puntos de operadores de revuelo
     print(f"   🔍 Cruzando {len(mrk_points):,} foto-centros con {len(polygons):,} polígonos...")
     matched_count = 0
     for pt in mrk_points:
         lat, lng = pt['lat'], pt['lng']
+        pt_op = pt.get('operator', '?')
+        pt_is_revuelo = pt_op in OPERADORES_REVUELO
+        
         for poly in polygons:
             if '_bbox' not in poly:
                 continue
+            
+            # Filtro revuelo: polígonos marcados solo aceptan operadores de revuelo
+            poly_is_revuelo = poly.get('_revuelo', False)
+            if poly_is_revuelo and not pt_is_revuelo:
+                continue  # skip original MRK for revuelo polygons
+            if not poly_is_revuelo and pt_is_revuelo:
+                continue  # skip revuelo MRK for original polygons
+            
             bb = poly['_bbox']
             if lat < bb[0] or lat > bb[1] or lng < bb[2] or lng > bb[3]:
                 continue
             if point_in_polygon(lat, lng, poly['coords']):
                 poly['_mrkHits'] += 1
-                poly['_opHits'][pt.get('operator', '?')] += 1
+                poly['_opHits'][pt_op] += 1
                 poly['_dateHits'][pt.get('date', '?')] += 1
-                poly['_opDateHits'][pt.get('operator', '?')][pt.get('date', '?')] += 1
+                poly['_opDateHits'][pt_op][pt.get('date', '?')] += 1
                 pt['matched'] = True
                 matched_count += 1
                 break
@@ -373,81 +394,96 @@ def process_intersections(polygons, mrk_points):
         m_lat = 111320.0
         m_lng = 111320.0 * math.cos(math.radians(ref_lat))
         
-        # Group points by file to form flight lines
-        flight_pts = defaultdict(list)
-        for pt in mrk_points:
-            flight_pts[pt.get('file', '')].append(pt)
+        def build_flight_coverage(pts):
+            """Build buffered flight coverage from a set of MRK points."""
+            flight_pts = defaultdict(list)
+            for pt in pts:
+                flight_pts[pt.get('file', '')].append(pt)
+            
+            lines = []
+            for fname, fpts in flight_pts.items():
+                local = [((p['lat'] - ref_lat) * m_lat, (p['lng'] - ref_lng) * m_lng) for p in fpts]
+                seg = [local[0]]
+                for i in range(1, len(local)):
+                    dx = local[i][0] - local[i-1][0]
+                    dy = local[i][1] - local[i-1][1]
+                    if math.sqrt(dx*dx + dy*dy) > 150:
+                        if len(seg) >= 2:
+                            try: lines.append(LineString(seg))
+                            except: pass
+                        seg = [local[i]]
+                    else:
+                        seg.append(local[i])
+                if len(seg) >= 2:
+                    try: lines.append(LineString(seg))
+                    except: pass
+            
+            if not lines:
+                return None
+            buffered = [line.buffer(BUFFER_M) for line in lines]
+            return unary_union(buffered)
         
-        # Build lines, splitting at gaps > 150m
-        all_lines = []
-        for fname, pts in flight_pts.items():
-            local = [((p['lat'] - ref_lat) * m_lat, (p['lng'] - ref_lng) * m_lng) for p in pts]
-            seg = [local[0]]
-            for i in range(1, len(local)):
-                dx = local[i][0] - local[i-1][0]
-                dy = local[i][1] - local[i-1][1]
-                if math.sqrt(dx*dx + dy*dy) > 150:
-                    if len(seg) >= 2:
-                        try:
-                            all_lines.append(LineString(seg))
-                        except:
-                            pass
-                    seg = [local[i]]
-                else:
-                    seg.append(local[i])
-            if len(seg) >= 2:
-                try:
-                    all_lines.append(LineString(seg))
-                except:
-                    pass
+        # Split MRK points: original vs revuelo
+        pts_original = [pt for pt in mrk_points if pt.get('operator', '') not in OPERADORES_REVUELO]
+        pts_revuelo = [pt for pt in mrk_points if pt.get('operator', '') in OPERADORES_REVUELO]
         
-        if all_lines:
-            # Buffer and union all flight lines
+        cov_original = build_flight_coverage(pts_original) if pts_original else None
+        cov_revuelo = build_flight_coverage(pts_revuelo) if pts_revuelo else None
+        
+        if pts_revuelo:
+            print(f"   📐 MRK original: {len(pts_original):,} pts | MRK revuelo: {len(pts_revuelo):,} pts")
+        
+        # Calculate coverage for each polygon using the appropriate flight coverage
+        cov_count = 0
+        for p in polygons:
+            if 'coords' not in p or len(p['coords']) < 3:
+                continue
+            
+            # Select correct coverage based on revuelo flag
+            poly_revuelo = p.get('_revuelo', False)
+            coverage = cov_revuelo if poly_revuelo else cov_original
+            
+            if coverage is None:
+                p['_cobertura'] = 0.0
+                continue
+            
             try:
-                buffered_lines = [line.buffer(BUFFER_M) for line in all_lines]
-                flight_coverage = unary_union(buffered_lines)
-                prep_coverage = prepared.prep(flight_coverage)
+                local_coords = [((c[0] - ref_lat) * m_lat, (c[1] - ref_lng) * m_lng) for c in p['coords']]
+                poly_shape = SPoly(local_coords)
+                if not poly_shape.is_valid:
+                    poly_shape = poly_shape.buffer(0)
+                if poly_shape.area < 1:
+                    continue
                 
-                # Calculate coverage for each polygon
-                cov_count = 0
-                for p in polygons:
-                    if 'coords' not in p or len(p['coords']) < 3:
-                        continue
-                    try:
-                        local_coords = [((c[0] - ref_lat) * m_lat, (c[1] - ref_lng) * m_lng) for c in p['coords']]
-                        poly_shape = SPoly(local_coords)
-                        if not poly_shape.is_valid:
-                            poly_shape = poly_shape.buffer(0)
-                        if poly_shape.area < 1:
-                            continue
-                        
-                        # Quick check: does coverage touch this polygon?
-                        if not prep_coverage.intersects(poly_shape):
-                            p['_cobertura'] = 0.0
-                            continue
-                        
-                        intersection = poly_shape.intersection(flight_coverage)
-                        cov = intersection.area / poly_shape.area
-                        p['_cobertura'] = round(min(cov, 1.0), 3)
-                        if cov > 0:
-                            cov_count += 1
-                    except Exception:
-                        pass
+                prep_cov = prepared.prep(coverage)
+                if not prep_cov.intersects(poly_shape):
+                    p['_cobertura'] = 0.0
+                    continue
                 
-                t2 = time.time()
-                print(f"   ✅ Cobertura calculada: {cov_count} polígonos con datos ({t2-t1:.1f}s)")
-            except Exception as e:
-                print(f"   ⚠️  Error en buffer: {e} — usando conteo de puntos")
+                intersection = poly_shape.intersection(coverage)
+                cov = intersection.area / poly_shape.area
+                p['_cobertura'] = round(min(cov, 1.0), 3)
+                if cov > 0:
+                    cov_count += 1
+            except Exception:
+                pass
+        
+        t2 = time.time()
+        print(f"   ✅ Cobertura calculada: {cov_count} polígonos con datos ({t2-t1:.1f}s)")
     
     # --- Asignar estado por polígono ---
     for p in polygons:
         cov = p.get('_cobertura', 0)
         hits = p.get('_mrkHits', 0)
+        is_revuelo = p.get('_revuelo', False)
         
         if cov >= UMBRAL_COBERTURA:
             p['_polyEstado'] = 'VOLADO'
         elif cov > 0 or hits > 0:
             p['_polyEstado'] = 'PARCIAL'
+        elif is_revuelo:
+            # Polígono de revuelo sin cobertura nueva → REVISION
+            p['_polyEstado'] = 'REVISION'
         else:
             p['_polyEstado'] = 'PENDIENTE'
     
@@ -721,6 +757,9 @@ def main():
     all_kml_data = {}
     all_polygons = []
     for kf in kml_files:
+        # Skip revuelo KML — it's processed separately
+        if kf.name.lower() == REVUELO_KML.lower():
+            continue
         polys = parse_kml(kf)
         all_kml_data[kf.name] = polys
         all_polygons.extend(polys)
@@ -735,6 +774,45 @@ def main():
     
     total_ha = sum(p.get('SUP_HA', 0) for p in all_polygons)
     print(f"\n   📊 Total: {len(all_polygons)} polígonos, {total_ha:,.1f} ha")
+    
+    # 1b. REVUELOS — marcar polígonos que necesitan revuelo
+    revuelo_kml_path = KML_DIR / REVUELO_KML
+    revuelo_count = 0
+    if revuelo_kml_path.exists():
+        print(f"\n🔄 Procesando revuelos: {REVUELO_KML}")
+        revuelo_polys = parse_kml(revuelo_kml_path)
+        revuelo_ha = sum(p.get('SUP_HA', 0) for p in revuelo_polys)
+        print(f"   📍 {len(revuelo_polys)} polígonos de revuelo ({revuelo_ha:,.1f} ha)")
+        
+        # Build centroid index of revuelo polygons
+        revuelo_centroids = []
+        for rp in revuelo_polys:
+            coords = rp.get('_coords', [])
+            if coords:
+                clat = sum(c[0] for c in coords) / len(coords)
+                clng = sum(c[1] for c in coords) / len(coords)
+                revuelo_centroids.append((clat, clng))
+        
+        # Match original polygons by centroid proximity
+        for p in all_polygons:
+            coords = p.get('_coords', [])
+            if not coords:
+                continue
+            plat = sum(c[0] for c in coords) / len(coords)
+            plng = sum(c[1] for c in coords) / len(coords)
+            
+            for rlat, rlng in revuelo_centroids:
+                dist = ((plat - rlat)**2 + (plng - rlng)**2)**0.5
+                if dist < MATCH_TOLERANCE:
+                    p['_revuelo'] = True
+                    revuelo_count += 1
+                    break
+        
+        revuelo_ha_matched = sum(p.get('SUP_HA', 0) for p in all_polygons if p.get('_revuelo'))
+        print(f"   ✅ {revuelo_count} polígonos marcados para revuelo ({revuelo_ha_matched:,.1f} ha)")
+        print(f"   🔧 Operadores revuelo: {', '.join(OPERADORES_REVUELO)}")
+    else:
+        print(f"\n   ℹ️  Sin archivo de revuelos ({REVUELO_KML})")
     
     # 2. MRK (con cache)
     print("\n✈️  Procesando archivos MRK...")

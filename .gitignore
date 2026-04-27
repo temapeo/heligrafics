@@ -5,3 +5,10 @@ datos/.DS_Store
 datos/.mrk_cache.json
 .DS_Store
 datos/.DS_Store
+datos/.mrk_cache.json
+*.tif
+*.tif.zip
+*.aux.xml
+*.kmz
+datos/mrk/M3E-2/result.tif
+datos/mrk/M3E-2/utm_optimizado/
